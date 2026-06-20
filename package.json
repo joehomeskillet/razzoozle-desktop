@@ -12,6 +12,7 @@
     "dev": "npm run build && electron .",
     "start": "electron .",
     "smoke": "node scripts/smoke.mjs",
+    "smoke:gateway": "node scripts/smoke-gateway.mjs",
     "dist": "electron-builder"
   },
   "dependencies": {
