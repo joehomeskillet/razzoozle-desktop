@@ -1,0 +1,66 @@
+appId: xyz.razzoozle.desktop
+productName: Razzoozle
+directories:
+  output: release
+files:
+  - dist/**/*
+  - node_modules/**/*
+  - package.json
+
+win:
+  # UNSIGNED for MVP (F1). No certificateFile / signtoolOptions on purpose ->
+  # one-time Windows SmartScreen "unrecognized app" warning on first run. Do NOT
+  # claim the .exe is signed. Integrity comes from the minisign-signed latest.yml
+  # (verified client-side before any update), not from an Authenticode cert.
+  target: nsis
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+# Makes electron-updater use the NATIVE github provider and writes it into the
+# generated latest.yml (F3). The gateway is NOT a download source — it only
+# returns a go/hold decision. Releases originate on GitHub (electron-updater
+# reads GitHub Release assets directly); Gitea is a pull-mirror backup only.
+publish:
+  provider: github
+  owner: joehomeskillet
+  repo: razzoozle-desktop
+  releaseType: release
+
+# =============================================================================
+# NOTE — F3 runtime update flow (what to wire; partially stubbed in this skeleton)
+# =============================================================================
+# The update path is a DECISION at the gateway, then a NATIVE GitHub fetch, then
+# a client-side minisign verify. The gateway NEVER hosts/proxies/redirects a
+# binary (no latest.yml redirect, no :asset endpoint).
+#
+#   1. DECISION (gateway = gate, kill-switch, staged rollout):
+#        GET https://gw.razzoozle.xyz/api/v1/update/<channel>?appVersion=<v>
+#        -> 200 { decision: "go"|"hold", latestVersion, notes?, repo }
+#      decision !== "go"  -> do nothing this cycle.
+#
+#   2. FETCH (electron-updater NATIVE github provider — config above):
+#        on "go", autoUpdater (provider:github, owner:joehomeskillet,
+#        repo:razzoozle-desktop) fetches latest.yml + .exe + .blockmap DIRECTLY
+#        from the GitHub Release. The gateway is not on this path.
+#        autoUpdater.autoDownload = false  (we gate + verify first).
+#
+#   3. VERIFY (F1 — minisign/Ed25519 over latest.yml, BEFORE install):
+#        on "update-downloaded", download latest.yml.minisig from the same
+#        Release, then:
+#          minisign -V -P "<bundled-pubkey>" -m latest.yml -x latest.yml.minisig
+#        The pubkey (razzoozle-update.pub) is BUNDLED in the app, never fetched
+#        at runtime, so a compromised Release cannot swap the key. Bad/absent
+#        signature -> abort, never quitAndInstall().
+#
+#   SmartScreen (F1, §6): the unsigned .exe re-warns until reputation accrues;
+#   documented in the README, not hidden. An EV cert is out of scope for MVP.
+#
+#   STATUS in this skeleton: the publish/provider wiring above is REAL. The
+#   3-step runtime flow is a TODO stub in src/main/index.ts (app.whenReady) +
+#   needs: electron-updater wiring, the minisign binary on the build runner,
+#   MINISIGN_SECRET_KEY as a GitHub Actions secret, and razzoozle-update.pub
+#   committed + bundled. See docs reference: ../razzloo-gateway/docs/ci-cd-update-channel.md §5.
+# =============================================================================
