@@ -159,11 +159,17 @@ function findFreePort(): Promise<number> {
 /** Poll the socket child's frozen /healthz until it answers "ok" or we give up. */
 function waitForSocketHealth(
   internalPort: number,
-  timeoutMs = 15000,
+  timeoutMs = 30000,
+  shouldAbort: () => string | null = () => null,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const attempt = () => {
+      const abort = shouldAbort();
+      if (abort) {
+        reject(new Error(abort));
+        return;
+      }
       const req = http.get(
         { host: "127.0.0.1", port: internalPort, path: "/healthz" },
         (res) => {
@@ -182,8 +188,15 @@ function waitForSocketHealth(
       req.setTimeout(1000, () => req.destroy());
     };
     const retry = () => {
+      const abort = shouldAbort();
+      if (abort) {
+        reject(new Error(abort));
+        return;
+      }
       if (Date.now() > deadline) {
-        reject(new Error("socket server did not become healthy in time"));
+        reject(
+          new Error(`socket server did not become healthy within ${timeoutMs}ms`),
+        );
         return;
       }
       setTimeout(attempt, 250);
@@ -205,6 +218,12 @@ export interface StartOptions {
    * source tree. Electron main passes app.getPath("userData") here.
    */
   configPath?: string;
+  /**
+   * File to append host + socket diagnostics to. A packaged Windows app has no
+   * visible console, so the socket's stderr is otherwise lost and a failure
+   * looks like a silent stall. Electron main passes <userData>/host.log.
+   */
+  logPath?: string;
 }
 
 export interface RunningHost {
@@ -291,6 +310,26 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
 
   const internalPort = await findFreePort();
 
+  // Diagnostics: a packaged Windows app has no visible console, so the socket's
+  // stderr is otherwise lost and any failure looks like a silent stall. Keep an
+  // in-memory ring buffer AND append to opts.logPath (<userData>/host.log).
+  const logBuf: string[] = [];
+  const log = (line: string): void => {
+    logBuf.push(line);
+    if (logBuf.length > 400) logBuf.shift();
+    if (opts.logPath) {
+      try {
+        fs.appendFileSync(opts.logPath, line + "\n");
+      } catch {
+        /* logging must never throw */
+      }
+    }
+  };
+  log(`[host] packaged=${isPackagedApp()} execPath=${process.execPath}`);
+  log(`[host] socketEntry=${paths.socketEntry}`);
+  log(`[host] webDist=${paths.webDist}`);
+  log(`[host] internalPort=${internalPort} publicPort=${opts.port}`);
+
   // The reused socket server persists config/quizz/results under CONFIG_PATH
   // (or ../../config relative to its cwd if unset). Default it to an OS-temp dir
   // so the host never writes into the Razzoozle source tree; Electron main
@@ -323,21 +362,39 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
-  child.stdout?.on("data", (d: Buffer) =>
-    process.stdout.write(`[socket] ${d}`),
-  );
-  child.stderr?.on("data", (d: Buffer) =>
-    process.stderr.write(`[socket] ${d}`),
-  );
+  child.stdout?.on("data", (d: Buffer) => log(`[socket] ${String(d).trimEnd()}`));
+  child.stderr?.on("data", (d: Buffer) => log(`[socket:err] ${String(d).trimEnd()}`));
 
   let childExited = false;
-  child.on("exit", () => (childExited = true));
+  let exitInfo = "";
+  let spawnError: Error | null = null;
+  // A ChildProcess 'error' (the spawn itself failing) with NO listener throws an
+  // uncaught exception that crashes main and freezes the renderer on "Starting…".
+  child.on("error", (e: Error) => {
+    spawnError = e;
+    log(`[socket:spawn-error] ${e.message}`);
+  });
+  child.on("exit", (code, sig) => {
+    childExited = true;
+    exitInfo = `code=${code ?? "null"} signal=${sig ?? "null"}`;
+    log(`[socket] exited ${exitInfo}`);
+  });
 
   try {
-    await waitForSocketHealth(internalPort);
+    // Fail FAST if the child dies / fails to launch — don't wait the full
+    // timeout for a /healthz that can never arrive.
+    await waitForSocketHealth(internalPort, 30000, () =>
+      spawnError
+        ? `socket failed to launch: ${spawnError.message}`
+        : childExited
+          ? `socket exited before becoming healthy (${exitInfo})`
+          : null,
+    );
   } catch (err) {
-    child.kill();
-    throw err;
+    if (!childExited) child.kill();
+    const tail = logBuf.slice(-25).join("\n");
+    const base = err instanceof Error ? err.message : String(err);
+    throw new Error(`${base}\n--- host.log (tail) ---\n${tail}`);
   }
 
   // The ping payload — protocol.md §15. NO game data.

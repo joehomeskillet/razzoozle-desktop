@@ -201,8 +201,19 @@ ipcMain.handle(
 
       if (!running) {
         // Persist the reused server's data under the app's userData dir, never in
-        // the Razzoozle source tree.
-        running = await startHost({ port, configPath: app.getPath("userData") });
+        // the Razzoozle source tree. host.log captures socket diagnostics (a
+        // packaged Windows app has no visible console).
+        const logPath = path.join(app.getPath("userData"), "host.log");
+        try {
+          fs.writeFileSync(logPath, `host:start ${new Date().toISOString()}\n`);
+        } catch {
+          /* ignore */
+        }
+        running = await startHost({
+          port,
+          configPath: app.getPath("userData"),
+          logPath,
+        });
       }
 
       // The QR + URL must point at the host's OWN http origin (F4). If we only
