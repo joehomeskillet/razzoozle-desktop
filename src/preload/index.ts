@@ -24,6 +24,9 @@ const api = {
   startHosting: (opts?: { useGateway?: boolean }): Promise<HostStartResult> =>
     ipcRenderer.invoke("host:start", opts),
   stopHosting: (): Promise<{ ok: boolean }> => ipcRenderer.invoke("host:stop"),
+  getGateway: (): Promise<string> => ipcRenderer.invoke("config:getGateway"),
+  setGateway: (url: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke("config:setGateway", url),
 };
 
 contextBridge.exposeInMainWorld("razzoozle", api);

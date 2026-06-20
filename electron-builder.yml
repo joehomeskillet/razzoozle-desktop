@@ -7,6 +7,11 @@ files:
   - node_modules/**/*
   - package.json
 
+asarUnpack:
+  - "**/*.node"
+
+npmRebuild: true
+
 # Ship the vendored Razzoozle game build as REAL files OUTSIDE the asar, at
 # resources/razzoozle/ on disk (process.resourcesPath + "/razzoozle"). The socket
 # entry is spawned as a child process and MUST be a real on-disk .cjs (a file

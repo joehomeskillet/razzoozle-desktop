@@ -5,7 +5,7 @@
 // join URL (http://<lan-ip>:<port>/ — a TOP-LEVEL URL the phone navigates to,
 // per F4), generates a QR for it, and returns it all to the renderer.
 
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, Menu } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -19,6 +19,7 @@ import {
   DEFAULT_HOST_PORT,
   HEARTBEAT_INTERVAL_MS,
   type HostCandidate,
+  DEFAULT_GATEWAY_URL,
 } from "./protocol";
 
 let mainWindow: BrowserWindow | null = null;
@@ -41,6 +42,40 @@ let gatewaySession: GatewaySession | null = null;
 // RAZZOOZLE_GATEWAY_ENABLED=1 (or the UI toggle, passed per host:start call).
 function gatewayEnabledByDefault(): boolean {
   return process.env.RAZZOOZLE_GATEWAY_ENABLED === "1";
+}
+
+// Persisted gateway URL config.
+interface Config {
+  gatewayUrl?: string;
+}
+
+function getConfigPath(): string {
+  return path.join(app.getPath("userData"), "config.json");
+}
+
+function readConfig(): Config {
+  try {
+    const data = fs.readFileSync(getConfigPath(), "utf8");
+    return JSON.parse(data);
+  } catch {
+    return {};
+  }
+}
+
+function writeConfig(config: Config): void {
+  try {
+    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf8");
+  } catch (err) {
+    console.error("Failed to write config:", err);
+  }
+}
+
+function getGatewayUrl(): string {
+  const env = process.env.RAZZOOZLE_GATEWAY_URL?.trim();
+  if (env) return env;
+  const config = readConfig();
+  if (config.gatewayUrl) return config.gatewayUrl;
+  return DEFAULT_GATEWAY_URL;
 }
 
 // Result handed back to the renderer after a successful "start hosting".
@@ -71,15 +106,65 @@ export interface HostStartResult {
 }
 
 function createWindow(): void {
-  mainWindow = new BrowserWindow({
-    width: 720,
-    height: 760,
-    webPreferences: {
-      preload: path.join(__dirname, "../preload/index.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
+  let win: BrowserWindow;
+
+  // Use MicaBrowserWindow on Windows, fall back to BrowserWindow on other platforms
+  if (process.platform === "win32") {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires,global-require
+      const mica = require("mica-electron") as typeof import("mica-electron");
+      win = new mica.MicaBrowserWindow({
+        width: 720,
+        height: 760,
+        webPreferences: {
+          preload: path.join(__dirname, "../preload/index.js"),
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
+        autoHideMenuBar: true,
+        backgroundColor: "#00000000", // Transparent so Mica shows through
+      });
+
+      // Apply Mica material and light theme
+      try {
+        // Cast the instance to access Mica-specific methods
+        const micaWin = win as unknown as {
+          setLightTheme(): void;
+          setMicaEffect(): void;
+        };
+        micaWin.setLightTheme();
+        if (mica.IS_WINDOWS_11) {
+          micaWin.setMicaEffect();
+        }
+      } catch (err) {
+        console.error("Failed to apply Mica effect:", err);
+      }
+    } catch (err) {
+      console.error("Failed to load mica-electron, falling back to standard BrowserWindow:", err);
+      win = new BrowserWindow({
+        width: 720,
+        height: 760,
+        webPreferences: {
+          preload: path.join(__dirname, "../preload/index.js"),
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
+      });
+    }
+  } else {
+    // Non-Windows: use standard BrowserWindow
+    win = new BrowserWindow({
+      width: 720,
+      height: 760,
+      webPreferences: {
+        preload: path.join(__dirname, "../preload/index.js"),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+  }
+
+  mainWindow = win;
   void mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
   mainWindow.on("closed", () => (mainWindow = null));
 }
@@ -111,7 +196,10 @@ async function startGatewaySession(
   port: number,
 ): Promise<{ session?: GatewaySession; error?: string }> {
   try {
-    const client = new GatewayClient({ tokenStore: new ElectronTokenStore() });
+    const client = new GatewayClient({
+      baseUrl: getGatewayUrl(),
+      tokenStore: new ElectronTokenStore(),
+    });
     const candidates = await buildHostCandidates({ port });
     if (candidates.length === 0) {
       return { error: "No reachable candidate to advertise (no LAN/public address)." };
@@ -269,7 +357,36 @@ ipcMain.handle("host:stop", async (): Promise<{ ok: boolean }> => {
   return { ok: true };
 });
 
+// IPC: config getter/setter for gateway URL
+ipcMain.handle("config:getGateway", (): string => {
+  return getGatewayUrl();
+});
+
+ipcMain.handle(
+  "config:setGateway",
+  (_evt, url: string): { ok: boolean; error?: string } => {
+    try {
+      // Validate URL format
+      if (!url.match(/^https?:\/\//i)) {
+        return { ok: false, error: "URL must start with http:// or https://" };
+      }
+      const config = readConfig();
+      config.gatewayUrl = url;
+      writeConfig(config);
+      return { ok: true };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : "Unknown error",
+      };
+    }
+  },
+);
+
 app.whenReady().then(() => {
+  // Remove the menu bar
+  Menu.setApplicationMenu(null);
+
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

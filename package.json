@@ -16,6 +16,7 @@
     "dist": "electron-builder"
   },
   "dependencies": {
+    "mica-electron": "^1.5.17",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
