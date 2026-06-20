@@ -1,0 +1,1 @@
+import{F as e,M as t,N as n,P as r}from"./dicebear-C28VZvPn.js";export{t as createAvatar,e as escape,r as license,n as schema};

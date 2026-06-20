@@ -1,0 +1,1 @@
+import"./rolldown-runtime-BYbx6iT9.js";import{mi as e,pi as t}from"./vendor-eBdP4LHS.js";import{i as n,r}from"./confetti-Bnn1kd3z.js";n();var i=r(),a=({children:n,className:r})=>(0,i.jsx)(`div`,{className:t(e(`z-10 flex w-full max-w-80 flex-col rounded-2xl border border-[var(--border-hairline)] bg-[var(--surface)] p-5 shadow-[var(--shadow-flat)]`,r)),children:n});export{a as t};

@@ -1,0 +1,1 @@
+var e=`Enter this code in the Razzoozle admin on your phone`,t=`Preparing display…`,n=`Waiting for manager to pair…`,r=`Waiting for the game to start…`,i=`Display`,a={enterCode:e,registering:t,waitingForManager:n,waitingForGame:r,defaultName:i};export{a as default,i as defaultName,e as enterCode,t as registering,r as waitingForGame,n as waitingForManager};

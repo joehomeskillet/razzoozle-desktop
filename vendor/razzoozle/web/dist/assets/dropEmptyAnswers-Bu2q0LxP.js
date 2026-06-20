@@ -1,0 +1,1 @@
+var e=e=>{let{answers:t}=e;if(!t)return e;let n=new Map,r=[];if(t.forEach((e,t)=>{e.trim()!==``&&(n.set(t,r.length),r.push(e))}),r.length===t.length||r.length<2)return e;let i=(e.solutions??[]).map(e=>n.get(e)).filter(e=>e!==void 0);return{...e,answers:r,solutions:i}};export{e as t};
