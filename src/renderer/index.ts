@@ -9,10 +9,15 @@ interface HostStartResult {
   qrDataUrl?: string;
   warning?: string | null;
   error?: string;
+  gatewayEnabled?: boolean;
+  gatewayCode?: string;
+  gatewayJoinUrl?: string;
+  gatewayQrDataUrl?: string;
+  gatewayError?: string;
 }
 
 interface RazzoozleApi {
-  startHosting: () => Promise<HostStartResult>;
+  startHosting: (opts?: { useGateway?: boolean }) => Promise<HostStartResult>;
   stopHosting: () => Promise<{ ok: boolean }>;
 }
 
@@ -34,13 +39,21 @@ const qr = $<HTMLImageElement>("qr");
 const joinUrlEl = $<HTMLElement>("joinUrl");
 const lanInfo = $<HTMLElement>("lanInfo");
 const warningEl = $<HTMLElement>("warning");
+const useGatewayEl = $<HTMLInputElement>("useGateway");
+const gatewayBox = $<HTMLElement>("gatewayBox");
+const gatewayQr = $<HTMLImageElement>("gatewayQr");
+const gatewayUrl = $<HTMLElement>("gatewayUrl");
+const gatewayCode = $<HTMLElement>("gatewayCode");
+const gatewayError = $<HTMLElement>("gatewayError");
 
 startBtn.addEventListener("click", () => {
   void (async () => {
     startBtn.disabled = true;
     startBtn.textContent = "Starting…";
 
-    const res = await window.razzoozle.startHosting();
+    const res = await window.razzoozle.startHosting({
+      useGateway: useGatewayEl.checked,
+    });
 
     if (!res.ok) {
       startBtn.disabled = false;
@@ -62,6 +75,22 @@ startBtn.addEventListener("click", () => {
       warningEl.textContent = res.warning;
     } else {
       warningEl.hidden = true;
+    }
+
+    // Gateway (Mode B) — show the join link + QR, or the honest failure note.
+    if (res.gatewayJoinUrl && res.gatewayCode) {
+      if (res.gatewayQrDataUrl) gatewayQr.src = res.gatewayQrDataUrl;
+      gatewayUrl.textContent = res.gatewayJoinUrl;
+      gatewayCode.textContent = res.gatewayCode;
+      gatewayBox.hidden = false;
+    } else {
+      gatewayBox.hidden = true;
+    }
+    if (res.gatewayError) {
+      gatewayError.hidden = false;
+      gatewayError.textContent = `Gateway unavailable (LAN still works): ${res.gatewayError}`;
+    } else {
+      gatewayError.hidden = true;
     }
 
     panel.classList.add("show");

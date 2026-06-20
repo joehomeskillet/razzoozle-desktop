@@ -90,21 +90,80 @@
         background: #fdecef;
         border-color: #f5c2cb;
       }
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin: 1rem 0;
+        font-size: 0.9rem;
+        cursor: pointer;
+      }
+      .toggle input {
+        width: 1.1rem;
+        height: 1.1rem;
+      }
+      .section-title {
+        font-size: 1rem;
+        margin: 0 0 0.75rem;
+      }
+      .gateway {
+        margin-top: 1.5rem;
+        padding-top: 1.25rem;
+        border-top: 1px solid #ddd;
+      }
+      #gatewayQr {
+        display: block;
+        margin: 0.5rem auto 1rem;
+        width: 280px;
+        height: 280px;
+        image-rendering: pixelated;
+      }
+      .code {
+        text-align: center;
+        font-size: 1rem;
+        margin-top: 0.5rem;
+      }
+      .code strong {
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+        letter-spacing: 0.15em;
+      }
     </style>
   </head>
   <body>
     <h1>Razzoozle Desktop</h1>
     <p class="sub">LAN Direct — host a game on this machine; phones on the same Wi-Fi join by scanning.</p>
 
+    <label class="toggle">
+      <input type="checkbox" id="useGateway" />
+      <span>Use the gateway so players can join from outside this network</span>
+    </label>
+
     <button id="startBtn">Start hosting</button>
 
     <section id="panel" class="panel">
-      <img id="qr" alt="Join QR code" />
+      <h2 class="section-title">On this Wi-Fi (LAN)</h2>
+      <img id="qr" alt="LAN join QR code" />
       <div class="url" id="joinUrl"></div>
       <div class="meta">
         <span id="lanInfo"></span>
         <span>Connected players: <strong id="playerCount">—</strong></span>
       </div>
+
+      <section id="gatewayBox" class="gateway" hidden>
+        <h2 class="section-title">From anywhere (gateway)</h2>
+        <img id="gatewayQr" alt="Gateway join QR code" />
+        <div class="url" id="gatewayUrl"></div>
+        <div class="code">Code: <strong id="gatewayCode">—</strong></div>
+        <div class="note">
+          The LAN link above always works on the same Wi-Fi. This gateway link
+          lets players find the host from another network — but a direct internet
+          connection still needs a public path to this machine (port forwarding,
+          a public IPv6, or a tunnel). Without one, only same-network players
+          connect.
+        </div>
+      </section>
+
+      <div id="gatewayError" class="note warn" hidden></div>
       <div id="warning" class="note warn" hidden></div>
       <div class="note">
         Players may need to be on the same Wi-Fi as this machine. Guest networks

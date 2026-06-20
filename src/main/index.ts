@@ -6,15 +6,42 @@
 // per F4), generates a QR for it, and returns it all to the renderer.
 
 import { app, BrowserWindow, ipcMain } from "electron";
+import fs from "node:fs";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import QRCode from "qrcode";
 
-import { detectLanIpv4 } from "./reachability";
+import { detectLanIpv4, buildHostCandidates } from "./reachability";
 import { startHost, type RunningHost } from "./local-server";
-import { DEFAULT_HOST_PORT } from "./protocol";
+import { GatewayClient } from "./gateway-client";
+import { ElectronTokenStore } from "./token-store";
+import {
+  DEFAULT_HOST_PORT,
+  HEARTBEAT_INTERVAL_MS,
+  type HostCandidate,
+} from "./protocol";
 
 let mainWindow: BrowserWindow | null = null;
 let running: RunningHost | null = null;
+
+// Active gateway session (Mode B). Null when the gateway is disabled or stopped.
+interface GatewaySession {
+  client: GatewayClient;
+  sessionId: string;
+  hostToken: string;
+  joinCode: string;
+  joinUrl: string;
+  candidates: HostCandidate[];
+  heartbeatTimer: ReturnType<typeof setInterval>;
+}
+let gatewaySession: GatewaySession | null = null;
+
+// Gateway is OPT-IN. LAN-only Mode A must work with it disabled — hosting must
+// never depend on the gateway being reachable. Default OFF; flip with
+// RAZZOOZLE_GATEWAY_ENABLED=1 (or the UI toggle, passed per host:start call).
+function gatewayEnabledByDefault(): boolean {
+  return process.env.RAZZOOZLE_GATEWAY_ENABLED === "1";
+}
 
 // Result handed back to the renderer after a successful "start hosting".
 export interface HostStartResult {
@@ -23,12 +50,24 @@ export interface HostStartResult {
   joinUrl?: string;
   lanIp?: string | null;
   port?: number;
-  /** Data-URL PNG of the QR encoding joinUrl. */
+  /** Data-URL PNG of the QR encoding the LAN joinUrl. */
   qrDataUrl?: string;
   /** Non-fatal warning (e.g. only loopback found). */
   warning?: string | null;
   /** Set when start failed. */
   error?: string;
+
+  // ── Gateway (Mode B) — present only when the gateway is enabled + reachable.
+  /** Was the gateway enabled for this start? */
+  gatewayEnabled?: boolean;
+  /** Short join code, e.g. "K7QPMX". */
+  gatewayCode?: string;
+  /** https://gw.razzoozle.xyz/j/<CODE> — the link a remote player opens. */
+  gatewayJoinUrl?: string;
+  /** Data-URL PNG of the QR encoding gatewayJoinUrl. */
+  gatewayQrDataUrl?: string;
+  /** Set when gateway registration was attempted but failed (non-fatal). */
+  gatewayError?: string;
 }
 
 function createWindow(): void {
@@ -45,39 +84,173 @@ function createWindow(): void {
   mainWindow.on("closed", () => (mainWindow = null));
 }
 
-// IPC: start hosting. Idempotent-ish — if already running, returns current info.
-ipcMain.handle("host:start", async (): Promise<HostStartResult> => {
+/** Stable opaque host install id (§2.2, "h_…"). Persisted under userData. */
+function getHostId(): string {
+  const file = path.join(app.getPath("userData"), "host-id");
   try {
-    const lan = detectLanIpv4();
-    const port = DEFAULT_HOST_PORT;
-
-    if (!running) {
-      // Persist the reused server's data under the app's userData dir, never in
-      // the Razzoozle source tree.
-      running = await startHost({ port, configPath: app.getPath("userData") });
-    }
-
-    // The QR + URL must point at the host's OWN http origin (F4). If we only
-    // have loopback, the URL still works locally but a phone can't reach it —
-    // we surface lan.warning so the UI is honest about it.
-    const ipForUrl = lan.ip ?? "127.0.0.1";
-    const joinUrl = `http://${ipForUrl}:${port}/`;
-    const qrDataUrl = await QRCode.toDataURL(joinUrl, { margin: 1, width: 320 });
-
-    return {
-      ok: true,
-      joinUrl,
-      lanIp: lan.ip,
-      port,
-      qrDataUrl,
-      warning: lan.warning,
-    };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    const existing = fs.readFileSync(file, "utf8").trim();
+    if (existing) return existing;
+  } catch {
+    /* first run */
   }
-});
+  const id = `h_${randomBytes(8).toString("hex")}`;
+  try {
+    fs.writeFileSync(file, id, "utf8");
+  } catch {
+    /* non-fatal: fall back to an in-memory id */
+  }
+  return id;
+}
+
+/**
+ * Register with the gateway and start the heartbeat loop. Best-effort: any
+ * failure is returned as gatewayError and does NOT abort hosting (LAN still
+ * works). Re-PATCHes (replace) when the candidate set changes between beats.
+ */
+async function startGatewaySession(
+  port: number,
+): Promise<{ session?: GatewaySession; error?: string }> {
+  try {
+    const client = new GatewayClient({ tokenStore: new ElectronTokenStore() });
+    const candidates = await buildHostCandidates({ port });
+    if (candidates.length === 0) {
+      return { error: "No reachable candidate to advertise (no LAN/public address)." };
+    }
+    const reg = await client.register({
+      hostId: getHostId(),
+      appVersion: app.getVersion(),
+      candidates,
+    });
+
+    const session: GatewaySession = {
+      client,
+      sessionId: reg.sessionId,
+      hostToken: reg.hostToken,
+      joinCode: reg.joinCode,
+      joinUrl: reg.joinUrl,
+      candidates,
+      heartbeatTimer: setInterval(() => {
+        void heartbeatTick(session, port);
+      }, HEARTBEAT_INTERVAL_MS),
+    };
+    session.heartbeatTimer.unref?.();
+    return { session };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** One heartbeat: re-detect candidates and PATCH (replace) if they changed. */
+async function heartbeatTick(session: GatewaySession, port: number): Promise<void> {
+  try {
+    const next = await buildHostCandidates({ port });
+    const changed =
+      next.length > 0 && !sameCandidateUrls(session.candidates, next);
+    if (changed) {
+      await session.client.heartbeat(session.sessionId, session.hostToken, {
+        candidateOp: "replace",
+        candidates: next,
+      });
+      session.candidates = next;
+    } else {
+      await session.client.heartbeat(session.sessionId, session.hostToken);
+    }
+  } catch (err) {
+    // Heartbeat failures are logged but never crash the host — the LAN path is
+    // independent of the gateway.
+    console.error(
+      "[gateway] heartbeat failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+/** Compare candidate sets by (kind,url) — order-independent. */
+function sameCandidateUrls(a: HostCandidate[], b: HostCandidate[]): boolean {
+  if (a.length !== b.length) return false;
+  const key = (c: HostCandidate) => `${c.kind}|${c.url}`;
+  const sa = new Set(a.map(key));
+  return b.every((c) => sa.has(key(c)));
+}
+
+/** Stop the heartbeat loop and unregister (DELETE) from the gateway. */
+async function stopGatewaySession(): Promise<void> {
+  if (!gatewaySession) return;
+  const s = gatewaySession;
+  gatewaySession = null;
+  clearInterval(s.heartbeatTimer);
+  try {
+    await s.client.unregister(s.sessionId, s.hostToken);
+  } catch (err) {
+    console.error(
+      "[gateway] unregister failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+// IPC: start hosting. Idempotent-ish — if already running, returns current info.
+// `useGateway` from the renderer toggle overrides the env default.
+ipcMain.handle(
+  "host:start",
+  async (_evt, args?: { useGateway?: boolean }): Promise<HostStartResult> => {
+    try {
+      const lan = detectLanIpv4();
+      const port = DEFAULT_HOST_PORT;
+      const useGateway = args?.useGateway ?? gatewayEnabledByDefault();
+
+      if (!running) {
+        // Persist the reused server's data under the app's userData dir, never in
+        // the Razzoozle source tree.
+        running = await startHost({ port, configPath: app.getPath("userData") });
+      }
+
+      // The QR + URL must point at the host's OWN http origin (F4). If we only
+      // have loopback, the URL still works locally but a phone can't reach it —
+      // we surface lan.warning so the UI is honest about it.
+      const ipForUrl = lan.ip ?? "127.0.0.1";
+      const joinUrl = `http://${ipForUrl}:${port}/`;
+      const qrDataUrl = await QRCode.toDataURL(joinUrl, { margin: 1, width: 320 });
+
+      const result: HostStartResult = {
+        ok: true,
+        joinUrl,
+        lanIp: lan.ip,
+        port,
+        qrDataUrl,
+        warning: lan.warning,
+        gatewayEnabled: useGateway,
+      };
+
+      // Mode B: register with the gateway so remote players can discover us.
+      // Best-effort — a gateway failure never blocks LAN hosting.
+      if (useGateway && !gatewaySession) {
+        const { session, error } = await startGatewaySession(port);
+        if (session) {
+          gatewaySession = session;
+        } else if (error) {
+          result.gatewayError = error;
+        }
+      }
+      if (gatewaySession) {
+        result.gatewayCode = gatewaySession.joinCode;
+        result.gatewayJoinUrl = gatewaySession.joinUrl;
+        result.gatewayQrDataUrl = await QRCode.toDataURL(gatewaySession.joinUrl, {
+          margin: 1,
+          width: 320,
+        });
+      }
+
+      return result;
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+);
 
 ipcMain.handle("host:stop", async (): Promise<{ ok: boolean }> => {
+  // Unregister from the gateway BEFORE tearing down the local server (§16.9).
+  await stopGatewaySession();
   if (running) {
     await running.stop();
     running = null;
@@ -102,6 +275,7 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   void (async () => {
+    await stopGatewaySession();
     if (running) {
       await running.stop();
       running = null;

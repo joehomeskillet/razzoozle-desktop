@@ -13,10 +13,16 @@ export interface HostStartResult {
   qrDataUrl?: string;
   warning?: string | null;
   error?: string;
+  gatewayEnabled?: boolean;
+  gatewayCode?: string;
+  gatewayJoinUrl?: string;
+  gatewayQrDataUrl?: string;
+  gatewayError?: string;
 }
 
 const api = {
-  startHosting: (): Promise<HostStartResult> => ipcRenderer.invoke("host:start"),
+  startHosting: (opts?: { useGateway?: boolean }): Promise<HostStartResult> =>
+    ipcRenderer.invoke("host:start", opts),
   stopHosting: (): Promise<{ ok: boolean }> => ipcRenderer.invoke("host:stop"),
 };
 
