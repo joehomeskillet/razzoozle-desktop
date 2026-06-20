@@ -38,6 +38,26 @@ Elle ne forke ni ne copie Razzoozle. Elle héberge les **mêmes** `@razzoozle/we
 3. **Connexion directe.** Sur le **même Wi-Fi**, c'est du **LAN-direct sans aucune configuration** — le téléphone navigue directement vers l'origine `http://` de votre hôte et s'y connecte sans intermédiaire. **Tout le jeu circule téléphone ↔ hôte ; rien ne passe par un serveur intermédiaire.**
 4. **Découverte au-delà du LAN (en option, opt-in).** Une **passerelle de rendez-vous optionnelle** (`gw.razzoozle.xyz`, le dépôt [razzloo-gateway](https://github.com/joehomeskillet/razzloo-gateway)) aide les téléphones à **trouver** l'hôte lorsqu'ils ne sont pas sur le même réseau. Elle sert **uniquement à la découverte** — elle stocke des métadonnées de session et des points de terminaison candidats, génère un code de connexion et transmet aux téléphones l'adresse de l'hôte. **Elle ne relaie jamais le jeu, n'héberge aucun état de jeu, et aucune donnée de jeu n'y transite.**
 
+```
+COMMENT ÇA MARCHE
+
+(A) Même Wi-Fi — le cas simple, aucune configuration
+
+    player phone  ──── join code / QR ───►  Razzoozle Desktop
+                  ◄──────── game ─────────►  (host · your PC :7777)
+                                             le quiz ne quitte jamais votre LAN
+
+(B) Téléphone sur un autre réseau — découverte optionnelle (opt-in) via la passerelle
+
+    1) Razzoozle Desktop ──register CODE + addresses──►  Gateway (gw.razzoozle.xyz)
+    2) phone   ──open  gw.razzoozle.xyz/j/CODE────────►  Gateway
+    3) phone   ◄──────── host addresses ──────────────   Gateway
+    4) phone   ═════════ connects DIRECT to host ═══════►  Razzoozle Desktop
+
+    La passerelle se contente d'associer CODE -> adresse de l'hôte. Elle ne conserve aucune donnée de jeu et
+    ne relaie jamais le jeu — une fois que le téléphone a l'adresse, elle s'efface.
+```
+
 ### La connexion directe est honnête sur ses limites
 
 Comme il n'y a **aucun relais** de jeu, un téléphone qui n'est **pas** sur le Wi-Fi de l'hôte ne peut l'atteindre que si un chemin direct existe :

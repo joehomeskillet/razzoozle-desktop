@@ -38,6 +38,26 @@ Sie forkt oder kopiert Razzoozle **nicht**. Sie hostet **dieselben** `@razzoozle
 3. **Direkte Verbindung.** Im **selben WLAN** ist es **LAN-direkt ohne jede Einrichtung** — das Handy navigiert direkt zur `http://`-Origin deines Hosts und verbindet sich unmittelbar. **Das gesamte Spielgeschehen läuft Handy ↔ Host; nichts geht durch einen Server dazwischen.**
 4. **Erkennung über das LAN hinaus (opt-in).** Ein **opt-in Rendezvous-Gateway** (`gw.razzoozle.xyz`, das Repo [razzloo-gateway](https://github.com/joehomeskillet/razzloo-gateway)) hilft Handys, den Host zu **finden**, wenn sie nicht im selben Netzwerk sind. Es dient **nur der Erkennung** — es speichert Session-Metadaten und Kandidaten-Endpunkte, vergibt einen Beitritts-Code und übergibt den Handys die Adresse des Hosts. **Es leitet niemals Spielgeschehen weiter, hostet keinen Spielzustand, und es passieren keine Spieldaten.**
 
+```
+SO FUNKTIONIERT ES
+
+(A) Gleiches WLAN — der einfache Fall, keine Einrichtung
+
+    player phone  ──── join code / QR ───►  Razzoozle Desktop
+                  ◄──────── game ─────────►  (host · your PC :7777)
+                                             das Quiz verlässt niemals dein LAN
+
+(B) Handy in einem anderen Netzwerk — opt-in Erkennung über das Gateway
+
+    1) Razzoozle Desktop ──register CODE + addresses──►  Gateway (gw.razzoozle.xyz)
+    2) phone   ──open  gw.razzoozle.xyz/j/CODE────────►  Gateway
+    3) phone   ◄──────── host addresses ──────────────   Gateway
+    4) phone   ═════════ connects DIRECT to host ═══════►  Razzoozle Desktop
+
+    Das Gateway ordnet nur CODE -> Host-Adresse zu. Es speichert keine Spieldaten und
+    leitet niemals Spielgeschehen weiter — sobald das Handy die Adresse hat, tritt es beiseite.
+```
+
 ### Die Direktverbindung ist ehrlich über ihre Grenzen
 
 Da es **kein Spiel-Relay** gibt, kann ein Handy, das **nicht** im WLAN des Hosts ist, den Host nur erreichen, wenn ein direkter Pfad existiert:

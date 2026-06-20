@@ -38,6 +38,26 @@ It does **not** fork or copy Razzoozle. It hosts the **same** `@razzoozle/web` a
 3. **Direct connect.** On the **same Wi-Fi** it is **LAN-direct with zero setup** — the phone navigates straight to your host's `http://` origin and connects directly. **All gameplay flows phone ↔ host; nothing goes through any server in between.**
 4. **Discovery beyond the LAN (opt-in).** An **opt-in rendezvous gateway** (`gw.razzoozle.xyz`, the [razzloo-gateway](https://github.com/joehomeskillet/razzloo-gateway) repo) helps phones **discover** the host when they are not on the same network. It is **discovery only** — it stores session metadata and candidate endpoints, mints a join code, and hands phones the host's address. **It never relays gameplay, hosts no game state, and no game data ever passes through it.**
 
+```
+HOW IT WORKS
+
+(A) Same Wi-Fi — the simple case, zero setup
+
+    player phone  ──── join code / QR ───►  Razzoozle Desktop
+                  ◄──────── game ─────────►  (host · your PC :7777)
+                                             the quiz never leaves your LAN
+
+(B) Phone on another network — opt-in discovery via the gateway
+
+    1) Razzoozle Desktop ──register CODE + addresses──►  Gateway (gw.razzoozle.xyz)
+    2) phone   ──open  gw.razzoozle.xyz/j/CODE────────►  Gateway
+    3) phone   ◄──────── host addresses ──────────────   Gateway
+    4) phone   ═════════ connects DIRECT to host ═══════►  Razzoozle Desktop
+
+    The gateway only maps CODE -> host address. It keeps no game data and
+    never relays gameplay — once the phone has the address, it steps aside.
+```
+
 ### Direct-connect is honest about its limits
 
 Because there is **no gameplay relay**, a phone that is **not** on the host's Wi-Fi can only reach the host if a direct path exists:

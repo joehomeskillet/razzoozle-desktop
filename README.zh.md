@@ -38,6 +38,26 @@
 3. **直接连接。** 在**同一 Wi-Fi** 下是**局域网直连、零配置** —— 手机直接导航到你主机的 `http://` 源并直连。**所有游戏过程都在手机 ↔ 主机之间流动；不经过任何中间服务器。**
 4. **跨局域网发现（可选，opt-in）。** 一个**可选的会合网关**（`gw.razzoozle.xyz`，即 [razzloo-gateway](https://github.com/joehomeskillet/razzloo-gateway) 仓库）在手机不在同一网络时帮助它们**发现**主机。它**仅用于发现** —— 存储会话元数据和候选端点、生成加入代码、把主机地址交给手机。**它从不中继游戏，不托管任何游戏状态，也没有任何游戏数据经过它。**
 
+```
+工作原理
+
+(A) 同一 Wi-Fi —— 简单情形，零配置
+
+    player phone  ──── join code / QR ───►  Razzoozle Desktop
+                  ◄──────── game ─────────►  (host · your PC :7777)
+                                             测验数据从不离开你的局域网
+
+(B) 手机在另一网络 —— 通过网关进行可选（opt-in）发现
+
+    1) Razzoozle Desktop ──register CODE + addresses──►  Gateway (gw.razzoozle.xyz)
+    2) phone   ──open  gw.razzoozle.xyz/j/CODE────────►  Gateway
+    3) phone   ◄──────── host addresses ──────────────   Gateway
+    4) phone   ═════════ connects DIRECT to host ═══════►  Razzoozle Desktop
+
+    网关只把 CODE -> 主机地址做映射。它不保存任何游戏数据，
+    也从不中继游戏 —— 一旦手机拿到地址，它便退到一旁。
+```
+
 ### 直连对自身的限制是诚实的
 
 由于**没有游戏中继**，一台**不在**主机 Wi-Fi 上的手机，只有在存在直接路径时才能连上主机：

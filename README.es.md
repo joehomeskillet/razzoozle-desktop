@@ -38,6 +38,26 @@
 3. **Conexión directa.** En la **misma Wi-Fi** es **LAN-directo sin ninguna configuración** — el teléfono navega directamente al origen `http://` de tu anfitrión y se conecta sin intermediarios. **Todo el juego fluye teléfono ↔ anfitrión; nada pasa por un servidor intermedio.**
 4. **Descubrimiento más allá de la LAN (opcional, opt-in).** Una **pasarela de encuentro opcional** (`gw.razzoozle.xyz`, el repositorio [razzloo-gateway](https://github.com/joehomeskillet/razzloo-gateway)) ayuda a los teléfonos a **encontrar** al anfitrión cuando no están en la misma red. Es **solo para descubrimiento** — almacena metadatos de la sesión y endpoints candidatos, genera un código de acceso y entrega a los teléfonos la dirección del anfitrión. **Nunca retransmite el juego, no aloja ningún estado del juego, y no pasa ningún dato del juego por ella.**
 
+```
+CÓMO FUNCIONA
+
+(A) Misma Wi-Fi — el caso sencillo, sin configuración
+
+    player phone  ──── join code / QR ───►  Razzoozle Desktop
+                  ◄──────── game ─────────►  (host · your PC :7777)
+                                             el cuestionario nunca sale de tu LAN
+
+(B) Teléfono en otra red — descubrimiento opcional (opt-in) a través del gateway
+
+    1) Razzoozle Desktop ──register CODE + addresses──►  Gateway (gw.razzoozle.xyz)
+    2) phone   ──open  gw.razzoozle.xyz/j/CODE────────►  Gateway
+    3) phone   ◄──────── host addresses ──────────────   Gateway
+    4) phone   ═════════ connects DIRECT to host ═══════►  Razzoozle Desktop
+
+    El gateway solo asigna CODE -> dirección del anfitrión. No guarda datos del juego y
+    nunca retransmite el juego — una vez que el teléfono tiene la dirección, se aparta.
+```
+
 ### La conexión directa es honesta sobre sus límites
 
 Como **no hay retransmisión** del juego, un teléfono que **no** está en la Wi-Fi del anfitrión solo puede alcanzarlo si existe una ruta directa:
