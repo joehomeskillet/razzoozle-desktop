@@ -21,10 +21,13 @@ interface RazzoozleApi {
   stopHosting: () => Promise<{ ok: boolean }>;
 }
 
-declare global {
-  interface Window {
-    razzoozle: RazzoozleApi;
-  }
+// Classic script (NOT a module) so dist/renderer/index.js runs as a plain
+// <script> over file:// in the packaged app. tsc emits a CommonJS `exports`
+// wrapper for any module file, which throws `exports is not defined` in the
+// renderer. A global Window augmentation in a script file is a top-level
+// `interface` (no `declare global`, which is module-only).
+interface Window {
+  razzoozle: RazzoozleApi;
 }
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -100,5 +103,3 @@ startBtn.addEventListener("click", () => {
     // io.engine.clientsCount; not wired into the LAN-only skeleton).
   })();
 });
-
-export {};
