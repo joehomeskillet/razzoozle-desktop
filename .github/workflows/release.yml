@@ -1,10 +1,7 @@
 name: Release
 
-# Build a Windows NSIS .exe, minisign-sign the electron-updater feed
-# (latest.yml), and publish a GitHub prerelease with all assets.
-#
-# Triggered by pushing a semver tag (the orchestrator tags + pushes; this
-# workflow never tags itself).
+# Build a Windows NSIS .exe, minisign-sign the electron-updater feed (latest.yml),
+# and publish a GitHub prerelease. Triggered by pushing a semver tag.
 on:
   push:
     tags:
@@ -32,36 +29,29 @@ jobs:
         run: npm run build
 
       - name: Package (electron-builder NSIS)
-        # Produces release/*.exe + release/latest.yml + release/*.blockmap.
-        # UNSIGNED by design (F1) — integrity comes from the minisign-signed
-        # latest.yml below, not an Authenticode cert.
+        # UNSIGNED by design (F1). --publish never: build + write latest.yml, do
+        # NOT auto-upload (the explicit gh release step uploads).
         run: npx electron-builder --publish never
 
-      - name: Install minisign
+      - name: Install minisign (jedisct1 0.11 — supports -W + unencrypted keys)
         shell: pwsh
         run: |
-          choco install minisign -y --no-progress
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "choco install failed; falling back to GitHub release zip"
-            $zip = "$env:RUNNER_TEMP\minisign.zip"
-            Invoke-WebRequest -Uri "https://github.com/jedisct1/minisign/releases/download/0.11/minisign-0.11-win64.zip" -OutFile $zip
-            Expand-Archive -Path $zip -DestinationPath "$env:RUNNER_TEMP\minisign" -Force
-            $bin = (Get-ChildItem -Path "$env:RUNNER_TEMP\minisign" -Recurse -Filter minisign.exe | Select-Object -First 1).DirectoryName
-            echo "$bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          }
+          $zip = "$env:RUNNER_TEMP\minisign.zip"
+          Invoke-WebRequest -Uri "https://github.com/jedisct1/minisign/releases/download/0.11/minisign-0.11-win64.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath "$env:RUNNER_TEMP\minisign" -Force
+          $bin = (Get-ChildItem -Path "$env:RUNNER_TEMP\minisign" -Recurse -Filter minisign.exe | Select-Object -First 1).DirectoryName
+          echo "$bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "$bin\minisign.exe" -v
 
       - name: Sign latest.yml with minisign
         shell: pwsh
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         run: |
-          # Write the (passwordless) secret key to a temp file.
+          Write-Host "release/ contents:"; Get-ChildItem release | Format-Table Name,Length
+          if (-not (Test-Path release/latest.yml)) { throw "release/latest.yml not found (electron-builder did not emit the update feed)" }
           $keyFile = "$env:RUNNER_TEMP\minisign.key"
           [System.IO.File]::WriteAllText($keyFile, $env:MINISIGN_SECRET_KEY)
-          # Sign release/latest.yml -> release/latest.yml.minisig.
-          # Key is PASSWORDLESS: -W is the documented non-interactive path (do not
-          # encrypt/decrypt the secret key with a password), so minisign never
-          # prompts. Empty stdin is a harmless belt-and-suspenders.
           "" | minisign -S -W -s $keyFile -m release/latest.yml
           if ($LASTEXITCODE -ne 0) { throw "minisign signing failed" }
           Remove-Item $keyFile -Force
@@ -79,4 +69,4 @@ jobs:
             (Get-ChildItem release/*.blockmap) `
             --prerelease `
             --title "Razzoozle Desktop ${{ github.ref_name }} (Beta)" `
-            --notes "Unsigned beta build. The .exe is UNSIGNED (one-time Windows SmartScreen warning on first run). Update integrity is enforced client-side via the minisign-signed latest.yml. See README for details."
+            --notes "Unsigned beta build (one-time Windows SmartScreen warning on first run). Update integrity is enforced client-side via the minisign-signed latest.yml. See README for details."
