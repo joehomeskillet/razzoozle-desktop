@@ -1,0 +1,16 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "packageRules": [
+    {
+      "description": "Razzoozle core (F2): group web+socket, label, tested-before-merge (no auto-merge). Bumps when Razzoozle CI publishes a new prebuilt artifact version. TODO: once the @razzoozle/* artifact pin is added to package.json (replacing the local-source consumption in src/main/local-server.ts), these rules take effect.",
+      "matchPackageNames": ["@razzoozle/web", "@razzoozle/socket", "@razzoozle/common"],
+      "groupName": "razzoozle core (web+socket)",
+      "labels": ["razzoozle-core"],
+      "automerge": false,
+      "rangeStrategy": "pin",
+      "schedule": ["at any time"]
+    }
+  ],
+  "github-actions": { "enabled": true }
+}

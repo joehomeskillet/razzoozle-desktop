@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Renderer is sandboxed (no node, no remote). Lock it down with CSP. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'self';"
+    />
+    <title>Razzoozle Desktop — Host</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 2rem;
+        max-width: 560px;
+        margin-inline: auto;
+        line-height: 1.5;
+      }
+      h1 {
+        font-size: 1.4rem;
+        margin: 0 0 0.25rem;
+      }
+      .sub {
+        color: #666;
+        margin-top: 0;
+        font-size: 0.9rem;
+      }
+      button {
+        font-size: 1rem;
+        padding: 0.6rem 1.2rem;
+        border-radius: 8px;
+        border: 1px solid #7c3aed;
+        background: #7c3aed;
+        color: #fff;
+        cursor: pointer;
+      }
+      button[disabled] {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .panel {
+        margin-top: 1.5rem;
+        padding: 1.25rem;
+        border: 1px solid #ddd;
+        border-radius: 12px;
+        display: none;
+      }
+      .panel.show {
+        display: block;
+      }
+      #qr {
+        display: block;
+        margin: 0.5rem auto 1rem;
+        width: 280px;
+        height: 280px;
+        image-rendering: pixelated;
+      }
+      .url {
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+        font-size: 1.05rem;
+        text-align: center;
+        word-break: break-all;
+        background: #f4f1ea;
+        color: #222;
+        padding: 0.5rem;
+        border-radius: 6px;
+      }
+      .meta {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 1rem;
+        font-size: 0.95rem;
+      }
+      .note {
+        margin-top: 1rem;
+        font-size: 0.85rem;
+        color: #8a6d1b;
+        background: #fff8e1;
+        border: 1px solid #f0e0a0;
+        border-radius: 6px;
+        padding: 0.6rem 0.8rem;
+      }
+      .warn {
+        color: #b00020;
+        background: #fdecef;
+        border-color: #f5c2cb;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Razzoozle Desktop</h1>
+    <p class="sub">LAN Direct — host a game on this machine; phones on the same Wi-Fi join by scanning.</p>
+
+    <button id="startBtn">Start hosting</button>
+
+    <section id="panel" class="panel">
+      <img id="qr" alt="Join QR code" />
+      <div class="url" id="joinUrl"></div>
+      <div class="meta">
+        <span id="lanInfo"></span>
+        <span>Connected players: <strong id="playerCount">—</strong></span>
+      </div>
+      <div id="warning" class="note warn" hidden></div>
+      <div class="note">
+        Players may need to be on the same Wi-Fi as this machine. Guest networks
+        and AP/client isolation can block phone-to-host connections.
+      </div>
+    </section>
+
+    <script type="module" src="./index.js"></script>
+  </body>
+</html>
