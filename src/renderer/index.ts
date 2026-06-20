@@ -19,6 +19,8 @@ interface HostStartResult {
 interface RazzoozleApi {
   startHosting: (opts?: { useGateway?: boolean }) => Promise<HostStartResult>;
   stopHosting: () => Promise<{ ok: boolean }>;
+  getGateway: () => Promise<string>;
+  setGateway: (url: string) => Promise<{ ok: boolean; error?: string }>;
 }
 
 // Classic script (NOT a module) so dist/renderer/index.js runs as a plain
@@ -48,6 +50,32 @@ const gatewayQr = $<HTMLImageElement>("gatewayQr");
 const gatewayUrl = $<HTMLElement>("gatewayUrl");
 const gatewayCode = $<HTMLElement>("gatewayCode");
 const gatewayError = $<HTMLElement>("gatewayError");
+const gatewayUrlInput = $<HTMLInputElement>("gatewayUrlInput");
+const playerCountEl = $<HTMLElement>("playerCount");
+
+// Load and display the current gateway URL
+void (async () => {
+  const url = await window.razzoozle.getGateway();
+  gatewayUrlInput.value = url;
+})();
+
+// Save gateway URL on blur or change (with validation)
+function saveGatewayUrl(): void {
+  const url = gatewayUrlInput.value.trim();
+  if (!url) return; // Ignore empty input
+  if (!url.match(/^https?:\/\//i)) {
+    gatewayUrlInput.value = ""; // Clear on invalid URL
+    return;
+  }
+  void window.razzoozle.setGateway(url).then((result) => {
+    if (!result.ok) {
+      console.error("Failed to set gateway URL:", result.error);
+    }
+  });
+}
+
+gatewayUrlInput.addEventListener("blur", saveGatewayUrl);
+gatewayUrlInput.addEventListener("change", saveGatewayUrl);
 
 startBtn.addEventListener("click", () => {
   void (async () => {
