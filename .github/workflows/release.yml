@@ -35,7 +35,7 @@ jobs:
         # Produces release/*.exe + release/latest.yml + release/*.blockmap.
         # UNSIGNED by design (F1) — integrity comes from the minisign-signed
         # latest.yml below, not an Authenticode cert.
-        run: npm run dist
+        run: npx electron-builder --publish never
 
       - name: Install minisign
         shell: pwsh
