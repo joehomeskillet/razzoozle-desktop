@@ -59,8 +59,10 @@ jobs:
           $keyFile = "$env:RUNNER_TEMP\minisign.key"
           [System.IO.File]::WriteAllText($keyFile, $env:MINISIGN_SECRET_KEY)
           # Sign release/latest.yml -> release/latest.yml.minisig.
-          # Key is PASSWORDLESS: feed an empty line on stdin for the password prompt.
-          "" | minisign -S -s $keyFile -m release/latest.yml
+          # Key is PASSWORDLESS: -W is the documented non-interactive path (do not
+          # encrypt/decrypt the secret key with a password), so minisign never
+          # prompts. Empty stdin is a harmless belt-and-suspenders.
+          "" | minisign -S -W -s $keyFile -m release/latest.yml
           if ($LASTEXITCODE -ne 0) { throw "minisign signing failed" }
           Remove-Item $keyFile -Force
           if (-not (Test-Path release/latest.yml.minisig)) { throw "latest.yml.minisig not produced" }
