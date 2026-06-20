@@ -7,6 +7,16 @@ files:
   - node_modules/**/*
   - package.json
 
+# Ship the vendored Razzoozle game build as REAL files OUTSIDE the asar, at
+# resources/razzoozle/ on disk (process.resourcesPath + "/razzoozle"). The socket
+# entry is spawned as a child process and MUST be a real on-disk .cjs (a file
+# inside the asar can't be spawned), and the web bundle is streamed from disk.
+# local-server.ts resolveRazzoozlePaths() reads exactly this location when
+# app.isPackaged. Source + provenance: vendor/razzoozle/SOURCE.txt.
+extraResources:
+  - from: vendor/razzoozle
+    to: razzoozle
+
 win:
   # UNSIGNED for MVP (F1). No certificateFile / signtoolOptions on purpose ->
   # one-time Windows SmartScreen "unrecognized app" warning on first run. Do NOT
