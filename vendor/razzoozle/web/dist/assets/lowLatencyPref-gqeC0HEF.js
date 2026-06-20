@@ -1,0 +1,1 @@
+var e=`razzoozle_low_latency_enabled`,t=t=>{try{window.localStorage.setItem(e,t?`1`:`0`)}catch{}},n=()=>{try{return window.localStorage.getItem(e)===`1`}catch{return!1}};export{t as n,n as t};

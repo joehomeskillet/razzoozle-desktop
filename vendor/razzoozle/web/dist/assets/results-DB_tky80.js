@@ -1,0 +1,1 @@
+var e={title:`最终排名`,subtitle:`看看这场测验的结果`,copyLink:`复制链接`,copied:`链接已复制`,loading:`正在加载最终排名`,notFound:`此结果已不再可用，可能已被删除。`,rank:`第 {{rank}} 名`,points:`{{count}} 分`,playSelf:`自己来玩`,hostYourOwn:`创建你自己的测验`,createSticker:`创建贴纸`,shareTitle:`排行榜`},t={share:e};export{t as default,e as share};

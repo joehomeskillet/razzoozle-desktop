@@ -1,0 +1,30 @@
+Razzoozle vendored game build
+==============================
+
+Source repo:   https://github.com/joehomeskillet/Razzoozle
+Commit SHA:    4b7af3cb4643361842d8331ca5cc4c79acdc16ac
+Commit date:   2026-06-20 23:41:41 +0200
+Built on:      2026-06-21 (UTC)
+Toolchain:     pnpm 11.5.1 (corepack), node v22.22.2
+
+Build commands:
+  pnpm install --no-frozen-lockfile
+  pnpm --filter @razzoozle/socket build   # esbuild -> dist/index.cjs (bundle:true, self-contained)
+  pnpm --filter @razzoozle/web build       # vite build -> dist/
+
+Vendored layout:
+  web/dist/        full prebuilt @razzoozle/web static bundle (index.html + assets/ + sounds/ + PWA files)
+  socket/index.cjs prebuilt @razzoozle/socket server entry
+
+Runtime dependencies:
+  The socket is built with esbuild bundle:true, so packages/socket/dist/index.cjs is fully
+  self-contained. It requires NO node_modules at runtime. The only non-builtin requires left in
+  the bundle are the OPTIONAL native accelerators `utf-8-validate` and `bufferutil` (ws) and
+  `supports-color` (pino) — all loaded inside try/catch and gracefully skipped when absent.
+  Verified by booting socket/index.cjs from an empty directory (no node_modules): /healthz -> "ok".
+  Therefore the socket source map (index.cjs.map, ~4MB) is intentionally NOT vendored — not needed
+  at runtime.
+
+These artifacts are committed deliberately so a windows-latest CI build can produce a working,
+self-contained unsigned NSIS .exe without cloning/building Razzoozle on the runner. To refresh,
+re-run the build commands above against a newer Razzoozle commit and replace this directory.

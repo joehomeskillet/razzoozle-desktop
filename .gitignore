@@ -2,3 +2,9 @@ node_modules/
 dist/
 out/
 release/
+
+# The vendored Razzoozle game build is committed deliberately (see
+# vendor/razzoozle/SOURCE.txt). Un-ignore it — the bare `dist/` rule above would
+# otherwise swallow vendor/razzoozle/web/dist/.
+!vendor/
+!vendor/**

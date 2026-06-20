@@ -1,0 +1,1 @@
+var e=(e,t)=>({name:e,data:t});export{e as t};

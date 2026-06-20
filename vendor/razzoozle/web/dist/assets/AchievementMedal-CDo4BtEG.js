@@ -1,0 +1,1 @@
+import{r as e}from"./confetti-Bnn1kd3z.js";import{t}from"./AchievementBadge-DvdSmPdK.js";var n=e(),r=e=>(0,n.jsx)(t,{...e});export{r as t};

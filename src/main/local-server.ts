@@ -84,13 +84,50 @@ const PROXY_PREFIXES = [
 ];
 
 /**
+ * Is this running inside a packaged (electron-builder NSIS) app? True only when
+ * Electron is present AND app.isPackaged. Returns false under plain-node (the
+ * smoke test) and under `electron .` dev runs. We require("electron") lazily so
+ * this module still loads under plain node (scripts/smoke.mjs), where electron
+ * is not available.
+ */
+function isPackagedApp(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const electron = require("electron") as { app?: { isPackaged?: boolean } };
+    return electron?.app?.isPackaged === true;
+  } catch {
+    return false; // plain node (smoke) — never packaged.
+  }
+}
+
+/**
  * Resolve where the prebuilt web + socket live.
  *
- * ponytail (F2 debt): hard-wired to the local Razzoozle source tree for the
- * skeleton. RAZZOOZLE_SRC overrides the root. Replace with a node_modules
- * resolve once the pinned artifact ships.
+ * PACKAGED (electron-builder NSIS): the game is vendored and shipped via
+ * electron-builder.yml `extraResources` (from: vendor/razzoozle, to: razzoozle),
+ * so it lands as REAL files at <resourcesPath>/razzoozle/ (NOT inside the asar —
+ * the spawned .cjs must be a real on-disk file). Layout:
+ *   <resourcesPath>/razzoozle/socket/index.cjs   (self-contained, no node_modules)
+ *   <resourcesPath>/razzoozle/web/dist/index.html
+ *
+ * DEV (plain node smoke / `electron .`): unchanged — read from the local
+ * Razzoozle source tree; RAZZOOZLE_SRC overrides the root.
+ *
+ * ponytail (F2 debt): the dev branch is still hard-wired to the local source
+ * tree. RAZZOOZLE_SRC overrides it. The packaged branch is the real artifact.
  */
 export function resolveRazzoozlePaths(): RazzoozlePaths {
+  if (isPackagedApp()) {
+    const base = path.join(process.resourcesPath, "razzoozle");
+    return {
+      socketEntry: path.join(base, "socket", "index.cjs"),
+      webDist: path.join(base, "web", "dist"),
+      // The socket bundle is self-contained; cwd only matters for its
+      // CONFIG_PATH fallback, which StartOptions.configPath overrides anyway.
+      socketCwd: path.join(base, "socket"),
+    };
+  }
+
   const root =
     process.env.RAZZOOZLE_SRC || "/nvmetank1/projects/Razzoozle/cd-src";
   const socketEntry = path.join(root, "packages/socket/dist/index.cjs");
@@ -265,6 +302,13 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
   // Spawn the prebuilt socket server (no fork, no source build). It binds its
   // own http+socket.io on WS_PORT on all interfaces; we only ever talk to it on
   // 127.0.0.1 and never expose it directly.
+  //
+  // A packaged app ships NO system `node`, so we run the cjs entry through
+  // Electron's OWN binary (process.execPath) in node mode via
+  // ELECTRON_RUN_AS_NODE=1 — that turns the Electron exe into a plain Node
+  // runtime (no Chromium, no app window). In dev/smoke process.execPath is
+  // already a real node/electron that can run the file, so we leave that env
+  // unset there.
   const child: ChildProcess = spawn(
     process.execPath,
     [paths.socketEntry],
@@ -274,6 +318,7 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
         ...process.env,
         WS_PORT: String(internalPort),
         CONFIG_PATH: configPath,
+        ...(isPackagedApp() ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
     },

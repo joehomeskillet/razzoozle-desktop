@@ -1,0 +1,1 @@
+var e=`在手机的 Razzoozle 管理后台中输入此代码`,t=`正在准备显示…`,n=`等待主持人配对…`,r=`等待游戏开始…`,i=`显示屏`,a={enterCode:e,registering:t,waitingForManager:n,waitingForGame:r,defaultName:i};export{a as default,i as defaultName,e as enterCode,t as registering,r as waitingForGame,n as waitingForManager};
