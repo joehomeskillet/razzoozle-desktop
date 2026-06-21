@@ -421,7 +421,7 @@ function createAutoLoginScript(password: string): string {
   if (!document.querySelector('[data-razzlogin-css-shim]')) {
     const style = document.createElement('style');
     style.dataset.razzloginCssShim = '';
-    style.textContent = \`body { padding-top: 40px; } .app-titlebar-shim { position: fixed; top: 0; left: 0; right: 0; height: 40px; -webkit-app-region: drag; z-index: 9999; } .app-titlebar-shim button, .app-titlebar-shim input { -webkit-app-region: no-drag; }\`;
+    style.textContent = 'body { padding-top: 40px; } .app-titlebar-shim { position: fixed; top: 0; left: 0; right: 0; height: 40px; -webkit-app-region: drag; z-index: 9999; } .app-titlebar-shim button, .app-titlebar-shim input { -webkit-app-region: no-drag; }';
     document.head.appendChild(style);
     const shim = document.createElement('div');
     shim.className = 'app-titlebar-shim';

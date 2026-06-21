@@ -128,8 +128,7 @@ export function resolveRazzoozlePaths(): RazzoozlePaths {
     };
   }
 
-  const root =
-    process.env.RAZZOOZLE_SRC || "/nvmetank1/projects/Razzoozle/cd-src";
+  const root = process.env.RAZZOOZLE_SRC || "/nvmetank1/projects/Razzoozle/cd-src";
   const socketEntry = path.join(root, "packages/socket/dist/index.cjs");
   const webDist = path.join(root, "packages/web/dist");
   // The socket process resolves config/branding relative to its own cwd
@@ -194,9 +193,7 @@ function waitForSocketHealth(
         return;
       }
       if (Date.now() > deadline) {
-        reject(
-          new Error(`socket server did not become healthy within ${timeoutMs}ms`),
-        );
+        reject(new Error(`socket server did not become healthy within ${timeoutMs}ms`));
         return;
       }
       setTimeout(attempt, 250);
@@ -255,9 +252,7 @@ function tryServeStatic(
   if (!fs.existsSync(filePath)) return false;
 
   const ext = path.extname(filePath).toLowerCase();
-  res.writeHead(200, {
-    "content-type": MIME[ext] || "application/octet-stream",
-  });
+  res.writeHead(200, { "content-type": MIME[ext] || "application/octet-stream" });
   fs.createReadStream(filePath).pipe(res);
   return true;
 }
@@ -334,20 +329,10 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
   // (or ../../config relative to its cwd if unset). Default it to an OS-temp dir
   // so the host never writes into the Razzoozle source tree; Electron main
   // overrides this with app.getPath("userData").
-  const configPath =
-    opts.configPath ?? path.join(os.tmpdir(), "razzoozle-desktop-config");
+  const configPath = opts.configPath ?? path.join(os.tmpdir(), "razzoozle-desktop-config");
   fs.mkdirSync(configPath, { recursive: true });
 
-  // Spawn the prebuilt socket server (no fork, no source build). It binds its
-  // own http+socket.io on WS_PORT on all interfaces; we only ever talk to it on
-  // 127.0.0.1 and never expose it directly.
-  //
-  // A packaged app ships NO system `node`, so we run the cjs entry through
-  // Electron's OWN binary (process.execPath) in node mode via
-  // ELECTRON_RUN_AS_NODE=1 — that turns the Electron exe into a plain Node
-  // runtime (no Chromium, no app window). In dev/smoke process.execPath is
-  // already a real node/electron that can run the file, so we leave that env
-  // unset there.
+  // --- BEGIN CHANGE 7: safe env construction ---
   const childEnv: Record<string, string> = {};
   if (process.env.PATH) childEnv.PATH = process.env.PATH;
   if (process.env.HOME) childEnv.HOME = process.env.HOME;
@@ -357,23 +342,19 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
   childEnv.CONFIG_PATH = configPath;
   if (isPackagedApp()) childEnv.ELECTRON_RUN_AS_NODE = "1";
 
-  const child: ChildProcess = spawn(
-    process.execPath,
-    [paths.socketEntry],
-    {
-      cwd: paths.socketCwd,
-      env: childEnv,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
+  const child: ChildProcess = spawn(process.execPath, [paths.socketEntry], {
+    cwd: paths.socketCwd,
+    env: childEnv,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  // --- END CHANGE 7 ---
+
   child.stdout?.on("data", (d: Buffer) => log(`[socket] ${String(d).trimEnd()}`));
   child.stderr?.on("data", (d: Buffer) => log(`[socket:err] ${String(d).trimEnd()}`));
 
   let childExited = false;
   let exitInfo = "";
   let spawnError: Error | null = null;
-  // A ChildProcess 'error' (the spawn itself failing) with NO listener throws an
-  // uncaught exception that crashes main and freezes the renderer on "Starting…".
   child.on("error", (e: Error) => {
     spawnError = e;
     log(`[socket:spawn-error] ${e.message}`);
@@ -385,8 +366,6 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
   });
 
   try {
-    // Fail FAST if the child dies / fails to launch — don't wait the full
-    // timeout for a /healthz that can never arrive.
     await waitForSocketHealth(internalPort, 30000, () =>
       spawnError
         ? `socket failed to launch: ${spawnError.message}`
@@ -401,7 +380,6 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
     throw new Error(`${base}\n--- host.log (tail) ---\n${tail}`);
   }
 
-  // The ping payload — protocol.md §15. NO game data.
   const pingBody: DesktopHostPing = {
     ok: true,
     service: HOST_SERVICE,
@@ -413,26 +391,22 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
     const url = req.url ?? "/";
     const pathOnly = url.split("?")[0] || "/";
 
-    // 1) Our own host endpoint — served locally, never proxied (no game data).
     if (pathOnly === PING_PATH) {
       const body = JSON.stringify(pingBody);
       res.writeHead(200, {
         "content-type": "application/json; charset=utf-8",
         "content-length": Buffer.byteLength(body),
-        // Allow the post-navigation same-origin verification fetch.
         "cache-control": "no-store",
       });
       res.end(body);
       return;
     }
 
-    // 2) Socket-owned routes (api/ws-http-handshake/healthz/etc.) → proxy.
     if (PROXY_PREFIXES.some((p) => pathOnly.startsWith(p))) {
       proxyHttp(internalPort, req, res);
       return;
     }
 
-    // 3) Static web bundle, else SPA fallback to index.html.
     if (tryServeStatic(paths.webDist, url, res)) return;
     if (tryServeStatic(paths.webDist, "/index.html", res)) return;
 
@@ -440,8 +414,6 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
     res.end();
   });
 
-  // socket.io upgrades to a raw WebSocket on /ws — forward the upgrade to the
-  // child by piping the two TCP sockets together.
   front.on("upgrade", (req, clientSocket, head) => {
     const proxyReq = http.request({
       host: "127.0.0.1",
@@ -454,9 +426,7 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
       const headers = Object.entries(proxyRes.headers)
         .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
         .join("\r\n");
-      clientSocket.write(
-        `HTTP/1.1 101 Switching Protocols\r\n${headers}\r\n\r\n`,
-      );
+      clientSocket.write(`HTTP/1.1 101 Switching Protocols\r\n${headers}\r\n\r\n`);
       if (head && head.length) proxySocket.write(head);
       proxySocket.pipe(clientSocket);
       clientSocket.pipe(proxySocket);
@@ -469,7 +439,6 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
 
   await new Promise<void>((resolve, reject) => {
     front.once("error", reject);
-    // Bind on 0.0.0.0 so phones on the LAN can reach it (repo goal #1).
     front.listen(opts.port, "0.0.0.0", () => resolve());
   });
 
