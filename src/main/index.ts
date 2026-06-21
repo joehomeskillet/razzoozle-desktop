@@ -508,11 +508,19 @@ function createAutoLoginScript(
     style.dataset.razzloginCssShim = '';
     document.head.appendChild(style);
   }
-  style.textContent = '.app-titlebar-shim { position: fixed; top: 0; left: 0; right: ${reserve}px; height: 40px; -webkit-app-region: drag; z-index: 9999; } .app-titlebar-shim button, .app-titlebar-shim input { -webkit-app-region: no-drag; }'
+  // ponytail: +320px clears the manager's top-right control cluster (game
+  // header Exit/QR/mute/… or console DE/Logout) so the z9999 drag strip stops
+  // eating their clicks. 320 = heuristic upper bound; widen if a plugin adds
+  // more header buttons.
+  style.textContent = '.app-titlebar-shim { position: fixed; top: 0; left: 0; right: calc(${reserve}px + 320px); height: 40px; -webkit-app-region: drag; z-index: 9999; } .app-titlebar-shim button, .app-titlebar-shim input { -webkit-app-region: no-drag; }'
     /* desktop: ComfyUI not bundled, hide image-gen */
     + ' input[placeholder^="Beschreibe das Bild"], input[placeholder^="Beschreibe das Bild"] ~ div { display: none !important; }'
     /* desktop: hide Satellit/Vorschläge/Laufende Spiele */
     + ' [id$="-tab-satellite"],[id$="-tab-submissions"],[id$="-tab-running"]{display:none !important;}'
+    /* desktop: hide the console logout — the host auto-logs-in, so logout just
+       bounces back through auto-login. Scoped to .console-shell so the game
+       header's Exit (Spiel beenden, same LogOut icon) is untouched. */
+    + ' .console-shell header button:has(svg.lucide-log-out){display:none !important;}'
     /* clear native window controls via Window Controls Overlay env */
     + ' .console-shell header{padding-right:max(1.5rem,calc(100vw - env(titlebar-area-width,100vw))) !important;}'
     + ' section[style*="--game-fg"] .justify-between.p-4{padding-right:max(1rem,calc(100vw - env(titlebar-area-width,100vw))) !important;}';
