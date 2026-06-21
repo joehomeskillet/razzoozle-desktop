@@ -25,6 +25,7 @@ import {
 } from "./protocol";
 import { startTunnel, wsBaseFromHttp, type TunnelHandle } from "./tunnel-client";
 import { RAZZOOZLE_LOGO_SVG } from "./brand-logo";
+import { buildStyledQrSvg } from "./styled-qr";
 
 let mainWindow: BrowserWindow | null = null;
 let running: RunningHost | null = null;
@@ -612,12 +613,7 @@ async function injectManagerScript(managerPassword: string): Promise<void> {
   let qrSvg: string | null = null;
   if (joinBase !== lanOrigin) {
     try {
-      qrSvg = await QRCode.toString(joinBase, {
-        type: "svg",
-        margin: 2,
-        errorCorrectionLevel: "M",
-        color: { dark: "#2e1065", light: "#ffffff" },
-      });
+      qrSvg = buildStyledQrSvg(joinBase);
     } catch (err) {
       console.error("[lobby-patch] QR generation failed:", err);
     }
