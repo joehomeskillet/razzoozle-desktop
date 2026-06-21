@@ -15,6 +15,7 @@ import { detectLanIpv4, buildHostCandidates } from "./reachability";
 import { startHost, type RunningHost } from "./local-server";
 import { GatewayClient } from "./gateway-client";
 import { ElectronTokenStore } from "./token-store";
+import { ManagerPasswordStore } from "./manager-password";
 import {
   DEFAULT_HOST_PORT,
   HEARTBEAT_INTERVAL_MS,
@@ -105,20 +106,61 @@ export interface HostStartResult {
   gatewayError?: string;
 }
 
+/**
+ * Create the main window: frameless cream + titleBarOverlay on Win11, manager
+ * endpoint auto-loaded.
+ */
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 720,
-    height: 760,
-    backgroundColor: "#faf7f0", // opaque cream — renders reliably on every machine (Mica needs compositing we cannot guarantee)
-    autoHideMenuBar: true,
+    width: 1200,
+    height: 800,
+    backgroundColor: "#faf7f0", // opaque cream
+    titleBarStyle: "hidden", // frameless (Win11 shows native controls)
+    titleBarOverlay: {
+      color: "#faf7f0", // cream background behind window controls
+      symbolColor: "#6d28d9", // purple controls (Razzoozle brand)
+      height: 40, // control bar height
+    },
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
-  void mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
+  // Remove menu bar entirely
+  Menu.setApplicationMenu(null);
   mainWindow.on("closed", () => (mainWindow = null));
+}
+
+/**
+ * Write or update game.json with the manager password so the socket can
+ * authenticate. Merges with existing config if present.
+ */
+function writeGameConfig(configPath: string, managerPassword: string): void {
+  const gameJsonPath = path.join(configPath, "game.json");
+
+  // Read existing config if present
+  let config: Record<string, unknown> = {};
+  if (fs.existsSync(gameJsonPath)) {
+    try {
+      const existing = fs.readFileSync(gameJsonPath, "utf8");
+      config = JSON.parse(existing);
+    } catch (err) {
+      console.warn("Failed to read existing game.json; starting fresh:", err);
+      config = {};
+    }
+  }
+
+  // Set/overwrite the managerPassword
+  config.managerPassword = managerPassword;
+
+  // Write back
+  try {
+    fs.writeFileSync(gameJsonPath, JSON.stringify(config, null, 2), "utf8");
+  } catch (err) {
+    console.error("Failed to write game.json:", err);
+    throw err;
+  }
 }
 
 /** Stable opaque host install id (§2.2, "h_…"). Persisted under userData. */
@@ -335,11 +377,124 @@ ipcMain.handle(
   },
 );
 
-app.whenReady().then(() => {
-  // Remove the menu bar
-  Menu.setApplicationMenu(null);
+/**
+ * Auto-login injection script: polls for password input, submits it when found.
+ * Idempotent — only acts when a password field is present. Interpolates the
+ * password safely via JSON.stringify to avoid injection.
+ */
+function createAutoLoginScript(password: string): string {
+  return `
+(function autoLogin() {
+  const password = ${JSON.stringify(password)};
+  let attempts = 0;
+  const maxAttempts = 15; // ~3s at 200ms intervals
 
+  const trySubmit = () => {
+    const inp = document.querySelector('input[type="password"]');
+    if (!inp) {
+      attempts++;
+      if (attempts < maxAttempts) {
+        setTimeout(trySubmit, 200);
+      } else {
+        console.log('[autologin] Password field not found after 3s');
+      }
+      return;
+    }
+
+    // Set value React-compatible way: get the setter and invoke it
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    if (setter) {
+      setter.call(inp, password);
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+      inp.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    // Find and click submit button
+    const form = inp.closest('form');
+    if (form && form.requestSubmit) {
+      form.requestSubmit();
+      console.log('[autologin] Submitted via form.requestSubmit()');
+    } else {
+      const btn = document.querySelector('button[type="submit"], form button');
+      if (btn) {
+        btn.click();
+        console.log('[autologin] Submitted via button click');
+      }
+    }
+  };
+
+  trySubmit();
+})();
+`;
+}
+
+app.whenReady().then(async () => {
   createWindow();
+
+  // Get or generate the manager password (secure, per-installation)
+  const passwordStore = new ManagerPasswordStore();
+  const managerPassword = passwordStore.getPassword();
+
+  // Write game.json so the socket uses this password
+  const configPath = app.getPath("userData");
+  try {
+    fs.mkdirSync(configPath, { recursive: true });
+    writeGameConfig(configPath, managerPassword);
+  } catch (err) {
+    console.error("Failed to set up game config:", err);
+    if (mainWindow) {
+      mainWindow.loadURL(
+        `data:text/html,<html><body style="font-family:sans-serif;padding:20px;background:#faf7f0;color:#333"><h1>Setup Error</h1><p>${encodeURIComponent(
+          `Failed to write game config: ${err instanceof Error ? err.message : String(err)}`,
+        )}</p></body></html>`,
+      );
+    }
+    return;
+  }
+
+  // Start the local server and load the manager endpoint
+  try {
+    const port = DEFAULT_HOST_PORT;
+    const logPath = path.join(configPath, "host.log");
+    running = await startHost({
+      port,
+      configPath,
+      logPath,
+    });
+
+    const managerUrl = `http://127.0.0.1:${port}/manager/config`;
+    await mainWindow!.loadURL(managerUrl);
+
+    // After page loads, inject auto-login script
+    mainWindow!.webContents.on("did-finish-load", () => {
+      const script = createAutoLoginScript(managerPassword);
+      mainWindow?.webContents
+        .executeJavaScript(script)
+        .catch((err) => console.error("[autologin] Injection failed:", err));
+    });
+
+    // Re-inject on every navigation (e.g., re-auth after socket reconnect)
+    mainWindow!.webContents.on("did-navigate", () => {
+      const script = createAutoLoginScript(managerPassword);
+      mainWindow?.webContents
+        .executeJavaScript(script)
+        .catch((err) => console.error("[autologin] Injection failed:", err));
+    });
+  } catch (err) {
+    const errorMsg =
+      err instanceof Error ? err.message : String(err);
+    console.error("Failed to start host:", err);
+    if (mainWindow) {
+      mainWindow.loadURL(
+        `data:text/html,<html><body style="font-family:sans-serif;padding:20px;background:#faf7f0;color:#333"><h1>Start Error</h1><p>${encodeURIComponent(
+          errorMsg,
+        )}</p><pre style="background:#f0f0f0;padding:10px;overflow:auto;max-height:300px;font-size:12px">${encodeURIComponent(
+          errorMsg,
+        )}</pre></body></html>`,
+      );
+    }
+  }
+
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
