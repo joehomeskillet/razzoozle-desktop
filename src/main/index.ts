@@ -23,6 +23,7 @@ import {
   type HostCandidate,
   DEFAULT_GATEWAY_URL,
 } from "./protocol";
+import { startTunnel, wsBaseFromHttp, type TunnelHandle } from "./tunnel-client";
 
 let mainWindow: BrowserWindow | null = null;
 let running: RunningHost | null = null;
@@ -32,6 +33,7 @@ interface GatewaySession {
   client: GatewayClient;
   sessionId: string;
   hostToken: string;
+  tunnel?: TunnelHandle;
   joinCode: string;
   joinUrl: string;
   candidates: HostCandidate[];
@@ -237,6 +239,23 @@ async function startGatewaySession(
       }, HEARTBEAT_INTERVAL_MS),
     };
     session.heartbeatTimer.unref?.();
+
+    // Start the R0 relay tunnel: best-effort, never blocks gateway registration.
+    try {
+      session.tunnel = startTunnel({
+        gatewayWsBase: wsBaseFromHttp(getGatewayUrl()),
+        sessionId: reg.sessionId,
+        hostToken: reg.hostToken,
+        hostPort: port,
+        logger: (msg: string) => console.log(`[tunnel] ${msg}`),
+      });
+    } catch (err) {
+      console.error(
+        "[tunnel] startup failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+
     return { session };
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
@@ -281,6 +300,17 @@ async function stopGatewaySession(): Promise<void> {
   if (!gatewaySession) return;
   const s = gatewaySession;
   gatewaySession = null;
+
+  // Close the tunnel BEFORE unregistering.
+  try {
+    s.tunnel?.close();
+  } catch (err) {
+    console.error(
+      "[tunnel] close failed:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
   clearInterval(s.heartbeatTimer);
   try {
     await s.client.unregister(s.sessionId, s.hostToken);
@@ -758,7 +788,7 @@ if (!gotLock) {
         if (!isHostRoute(gp)) {
           mainWindow!.webContents
             .loadURL(managerUrl)
-            .catch((reloadErr) => console.error('[nav-guard] reload failed:', reloadErr));
+            .catch((reloadErr) => console.error('[nav-guide] reload failed:', reloadErr));
           return;
         }
         if (gp === '/manager/config') {
