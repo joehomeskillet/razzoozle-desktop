@@ -5,7 +5,7 @@
 // join URL (http://<lan-ip>:<port>/ — a TOP-LEVEL URL the phone navigates to,
 // per F4), generates a QR for it, and returns it all to the renderer.
 
-import { app, BrowserWindow, ipcMain, Menu, screen } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, screen, Tray } from "electron";
 import { autoUpdater } from "electron-updater";
 import fs from "node:fs";
 import path from "node:path";
@@ -41,14 +41,14 @@ let gatewaySession: GatewaySession | null = null;
 
 // Gateway is OPT-IN. LAN-only Mode A must work with it disabled — hosting must
 // never depend on the gateway being reachable. Default OFF; flip with
-// RAZZOOZLE_GATEWAY_ENABLED=1 (or the UI toggle, passed per host:start call).
-function gatewayEnabledByDefault(): boolean {
-  return process.env.RAZZOOZLE_GATEWAY_ENABLED === "1";
-}
+// RAZZOOZLE_GATEWAY_ENABLED=1 (env, dev) or the Tray toggle (persisted in
+// config.json). See getUseGateway() below.
 
-// Persisted gateway URL config.
+// Persisted gateway config.
 interface Config {
   gatewayUrl?: string;
+  /** Persisted opt-in for outside-LAN remote-join via the gateway (Mode B). */
+  useGateway?: boolean;
 }
 
 function getConfigPath(): string {
@@ -78,6 +78,21 @@ function getGatewayUrl(): string {
   const config = readConfig();
   if (config.gatewayUrl) return config.gatewayUrl;
   return DEFAULT_GATEWAY_URL;
+}
+
+/**
+ * Persisted gateway opt-in. The env override (RAZZOOZLE_GATEWAY_ENABLED=1) still
+ * forces ON for dev; otherwise the value persisted by the Tray toggle wins.
+ */
+function getUseGateway(): boolean {
+  if (process.env.RAZZOOZLE_GATEWAY_ENABLED === "1") return true;
+  return readConfig().useGateway === true;
+}
+
+function setUseGateway(value: boolean): void {
+  const config = readConfig();
+  config.useGateway = value;
+  writeConfig(config);
 }
 
 // Result handed back to the renderer after a successful "start hosting".
@@ -285,7 +300,7 @@ ipcMain.handle(
     try {
       const lan = detectLanIpv4();
       const port = DEFAULT_HOST_PORT;
-      const useGateway = args?.useGateway ?? gatewayEnabledByDefault();
+      const useGateway = args?.useGateway ?? getUseGateway();
 
       if (!running) {
         // Persist the reused server's data under the app's userData dir, never in
@@ -366,9 +381,10 @@ ipcMain.handle(
   "config:setGateway",
   (_evt, url: string): { ok: boolean; error?: string } => {
     try {
-      // Validate URL format
-      if (!url.match(/^https?:\/\//i)) {
-        return { ok: false, error: "URL must start with http:// or https://" };
+      // Validate URL format. HTTPS-only: the rendezvous carries a Bearer token,
+      // so a plaintext gateway URL is rejected (no token over http).
+      if (!url.match(/^https:\/\//i)) {
+        return { ok: false, error: "URL must start with https://" };
       }
       const config = readConfig();
       config.gatewayUrl = url;
@@ -472,6 +488,138 @@ function injectManagerScript(managerPassword: string): void {
     .catch((err) => console.error("[autologin] Injection failed:", err));
 }
 
+let tray: Tray | null = null;
+
+/**
+ * Start the gateway session if enabled + not already running. Best-effort: a
+ * gateway failure never blocks LAN hosting. Returns true once a session exists.
+ */
+async function ensureGatewaySession(port: number): Promise<boolean> {
+  if (gatewaySession) return true;
+  const { session, error } = await startGatewaySession(port);
+  if (session) {
+    gatewaySession = session;
+    return true;
+  }
+  if (error) console.error("[gateway] session start failed:", error);
+  return false;
+}
+
+/**
+ * Inject a small dismissible "connection info" banner into the manager page:
+ * the LAN join URL and, if a gateway session exists, the gateway join URL+code.
+ * Main-process only (executeJavaScript) — no preload, no game collision.
+ */
+function showConnectionInfoBanner(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const lan = detectLanIpv4();
+  const lanUrl = `http://${lan.ip ?? "127.0.0.1"}:${DEFAULT_HOST_PORT}/`;
+  const gw = gatewaySession
+    ? { url: gatewaySession.joinUrl, code: gatewaySession.joinCode }
+    : null;
+  const payload = JSON.stringify({ lanUrl, gw });
+  const script = `
+(function () {
+  var data = ${payload};
+  var old = document.getElementById('razz-conn-info');
+  if (old) old.remove();
+  // Built entirely via safe DOM APIs (textContent / setAttribute) — no innerHTML,
+  // so the interpolated URLs/code can never inject markup into the manager page.
+  var box = document.createElement('div');
+  box.id = 'razz-conn-info';
+  box.style.cssText = 'position:fixed;top:48px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#faf7f0;color:#333;border:1px solid #6d28d9;border-radius:10px;padding:14px 18px;box-shadow:0 6px 24px rgba(0,0,0,.18);font-family:sans-serif;font-size:14px;max-width:90vw;';
+  function row(text) {
+    var d = document.createElement('div');
+    d.style.marginBottom = '6px';
+    if (text != null) d.textContent = text;
+    return d;
+  }
+  function link(url) {
+    var a = document.createElement('a');
+    a.setAttribute('href', url);
+    a.style.color = '#6d28d9';
+    a.textContent = url;
+    return a;
+  }
+  var title = row('Verbindungs-Info');
+  title.style.fontWeight = '700';
+  title.style.marginBottom = '8px';
+  box.appendChild(title);
+  var lanRow = row('LAN-Beitritt: ');
+  lanRow.appendChild(link(data.lanUrl));
+  box.appendChild(lanRow);
+  if (data.gw) {
+    var gwRow = row('Remote-Beitritt: ');
+    gwRow.appendChild(link(data.gw.url));
+    box.appendChild(gwRow);
+    var codeRow = row('Code: ');
+    var codeStrong = document.createElement('strong');
+    codeStrong.textContent = data.gw.code;
+    codeRow.appendChild(codeStrong);
+    box.appendChild(codeRow);
+  } else {
+    var offRow = row('Remote-Beitritt (Gateway) ist deaktiviert.');
+    offRow.style.color = '#888';
+    box.appendChild(offRow);
+  }
+  var close = document.createElement('button');
+  close.textContent = 'Schließen';
+  close.style.cssText = 'margin-top:6px;background:#6d28d9;color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;-webkit-app-region:no-drag';
+  close.onclick = function () { box.remove(); };
+  box.appendChild(close);
+  document.body.appendChild(box);
+})();
+`;
+  mainWindow.webContents
+    .executeJavaScript(script)
+    .catch((err) => console.error("[conn-info] inject failed:", err));
+}
+
+/**
+ * Build the system Tray (main-process control surface — NO preload, NO second
+ * window). Toggles the persisted gateway opt-in and live-(re)starts/stops the
+ * session, shows connection info, and quits.
+ */
+function buildTray(managerPort: number): void {
+  if (tray) return;
+  try {
+    tray = new Tray(path.join(__dirname, "../icon.ico"));
+  } catch (err) {
+    console.error("[tray] could not create tray:", err);
+    return;
+  }
+  tray.setToolTip("Razzoozle");
+  const rebuildMenu = (): void => {
+    const menu = Menu.buildFromTemplate([
+      {
+        label: "Remote-Beitritt (Gateway)",
+        type: "checkbox",
+        checked: getUseGateway(),
+        click: (item) => {
+          void (async () => {
+            const enabled = item.checked;
+            setUseGateway(enabled);
+            if (enabled) {
+              await ensureGatewaySession(managerPort);
+            } else {
+              await stopGatewaySession();
+            }
+            rebuildMenu();
+          })();
+        },
+      },
+      {
+        label: "Verbindungs-Info anzeigen",
+        click: () => showConnectionInfoBanner(),
+      },
+      { type: "separator" },
+      { label: "Beenden", click: () => app.quit() },
+    ]);
+    tray?.setContextMenu(menu);
+  };
+  rebuildMenu();
+}
+
 // Single-instance lock: a second launch must NOT spawn a second host (which
 // would hit port 7777 EADDRINUSE and brick). Focus the existing window instead.
 const gotLock = app.requestSingleInstanceLock();
@@ -521,6 +669,17 @@ if (!gotLock) {
       configPath,
       logPath,
     });
+
+    // Mode B: register with the gateway when the persisted opt-in is on. The
+    // direct auto-start path otherwise never registers (LAN still works either
+    // way — gateway failures never block hosting).
+    if (getUseGateway()) {
+      await ensureGatewaySession(port);
+    }
+
+    // System tray control surface (toggle gateway / show info / quit). Main-
+    // process only — no preload, no second BrowserWindow, no game collision.
+    buildTray(port);
 
     const managerUrl = `http://127.0.0.1:${port}/manager`;
 
