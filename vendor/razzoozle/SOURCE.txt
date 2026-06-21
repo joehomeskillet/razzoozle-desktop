@@ -2,9 +2,9 @@ Razzoozle vendored game build
 ==============================
 
 Source repo:   https://github.com/joehomeskillet/Razzoozle
-Commit SHA:    4b7af3cb4643361842d8331ca5cc4c79acdc16ac
-Commit date:   2026-06-20 23:41:41 +0200
-Built on:      2026-06-21 (UTC)
+Commit SHA:    cbac87bd4059bd41dc8eb16f21571174dddaaba8
+Commit date:   2026-06-21 21:04:38 +0200
+Built on:      2026-06-21 (UTC) — refreshed for host-integration contract (native ?pin QR)
 Toolchain:     pnpm 11.5.1 (corepack), node v22.22.2
 
 Build commands:

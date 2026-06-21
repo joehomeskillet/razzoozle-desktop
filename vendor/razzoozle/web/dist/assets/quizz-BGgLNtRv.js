@@ -1,1 +1,0 @@
-import{r as e}from"./confetti-Bnn1kd3z.js";import{l as t}from"./QuestionEditorType-CyuAdida.js";import{t as n}from"./QuizzEditorShell-BaLq4fTn.js";var r=e(),i=()=>(0,r.jsx)(t,{children:(0,r.jsx)(n,{})});export{i as component};
