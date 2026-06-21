@@ -24,6 +24,7 @@ import {
   DEFAULT_GATEWAY_URL,
 } from "./protocol";
 import { startTunnel, wsBaseFromHttp, type TunnelHandle } from "./tunnel-client";
+import { RAZZOOZLE_LOGO_SVG } from "./brand-logo";
 
 let mainWindow: BrowserWindow | null = null;
 let running: RunningHost | null = null;
@@ -438,6 +439,9 @@ function createAutoLoginScript(
   password: string,
   reserveRightPx: number,
   joinBase: string,
+  lanOrigin: string,
+  qrSvg: string | null,
+  logoSvg: string,
 ): string {
   // reserveRightPx is the DPI-scaled width the native window controls occupy at
   // the current display scale factor — keeps the drag strip clear of the
@@ -503,6 +507,76 @@ function createAutoLoginScript(
     shim.dataset.razzloginTitlebar = '';
     document.body.insertBefore(shim, document.body.firstChild);
   }
+
+  // Lobby DOM patch (the game is read-only): render the Razzoozle wordmark in
+  // place of the plain title text, and — when the gateway is on — show the
+  // gateway join URL instead of the LAN origin and swap the QR to match. All
+  // idempotent + best-effort (a failure never affects hosting). Built via the
+  // DOM API (DOMParser/replaceChildren/textContent), no innerHTML.
+  window.__razzLobbyData = {
+    lan: ${JSON.stringify(lanOrigin)},
+    url: ${JSON.stringify(joinBase)},
+    qr: ${qrSvg ? JSON.stringify(qrSvg) : "null"},
+    logo: ${JSON.stringify(logoSvg)}
+  };
+  window.__razzPatchLobby = function () {
+    try {
+      var d = window.__razzLobbyData; if (!d) return;
+      // (1) logo: replace the default "Razzoozle" title text with the wordmark
+      if (d.logo) {
+        var hs = document.querySelectorAll('h1');
+        for (var i = 0; i < hs.length; i++) {
+          var h = hs[i];
+          if (h.dataset.razzLogo) continue;
+          if ((h.textContent || '').trim() !== 'Razzoozle') continue;
+          try {
+            var ls = new DOMParser().parseFromString(d.logo, 'image/svg+xml').documentElement;
+            ls.removeAttribute('width'); ls.removeAttribute('height');
+            ls.style.height = 'clamp(40px,8vh,64px)';
+            ls.style.width = 'auto';
+            ls.style.display = 'block';
+            ls.style.margin = '0 auto';
+            h.replaceChildren(ls);
+            h.dataset.razzLogo = '1';
+          } catch (e) {}
+        }
+      }
+      // (2) join URL + (3) QR — only when the gateway is on (url differs from LAN)
+      if (d.url && d.url !== d.lan) {
+        var ns = document.querySelectorAll('p, span, a');
+        for (var j = 0; j < ns.length; j++) {
+          var el = ns[j];
+          if (el.children.length === 0 && (el.textContent || '').trim() === d.lan) {
+            el.textContent = d.url;
+          }
+        }
+        if (d.qr) {
+          var qd = document.querySelectorAll('.h-auto.w-auto, [class~="size-56"]');
+          for (var k = 0; k < qd.length; k++) {
+            var c = qd[k];
+            if (c.dataset.razzQr === d.url) continue;
+            if (!c.querySelector('svg')) continue;
+            try {
+              var qs = new DOMParser().parseFromString(d.qr, 'image/svg+xml').documentElement;
+              qs.setAttribute('width', '100%'); qs.setAttribute('height', '100%');
+              c.replaceChildren(qs); c.dataset.razzQr = d.url;
+            } catch (e) {}
+          }
+        }
+      }
+    } catch (e) {}
+  };
+  window.__razzPatchLobby();
+  if (!window.__razzLobbyObs) {
+    window.__razzLobbyObs = new MutationObserver(function () {
+      if (window.__razzLobbyRAF) return;
+      window.__razzLobbyRAF = requestAnimationFrame(function () {
+        window.__razzLobbyRAF = 0; window.__razzPatchLobby();
+      });
+    });
+    window.__razzLobbyObs.observe(document.documentElement, { childList: true, subtree: true });
+    setInterval(function () { window.__razzPatchLobby(); }, 1500);
+  }
 })();
 `;
 }
@@ -526,11 +600,32 @@ function computeReserveRightPx(): number {
  * DPI reserve at injection time. Used by both did-finish-load and the
  * did-navigate-in-page re-inject path.
  */
-function injectManagerScript(managerPassword: string): void {
+async function injectManagerScript(managerPassword: string): Promise<void> {
+  const joinBase = resolveJoinBase();
+  const lanIp = detectLanIpv4().ip ?? "127.0.0.1";
+  const lanOrigin = `http://${lanIp}:${DEFAULT_HOST_PORT}`;
+  // Regenerate a QR for the gateway join URL only when the gateway is on
+  // (joinBase differs from the LAN origin). On-brand dark = secondary ink-violet.
+  let qrSvg: string | null = null;
+  if (joinBase !== lanOrigin) {
+    try {
+      qrSvg = await QRCode.toString(joinBase, {
+        type: "svg",
+        margin: 2,
+        errorCorrectionLevel: "M",
+        color: { dark: "#2e1065", light: "#ffffff" },
+      });
+    } catch (err) {
+      console.error("[lobby-patch] QR generation failed:", err);
+    }
+  }
   const script = createAutoLoginScript(
     managerPassword,
     computeReserveRightPx(),
-    resolveJoinBase(),
+    joinBase,
+    lanOrigin,
+    qrSvg,
+    RAZZOOZLE_LOGO_SVG,
   );
   mainWindow?.webContents
     .executeJavaScript(script)
