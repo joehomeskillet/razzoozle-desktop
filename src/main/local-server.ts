@@ -348,17 +348,21 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
   // runtime (no Chromium, no app window). In dev/smoke process.execPath is
   // already a real node/electron that can run the file, so we leave that env
   // unset there.
+  const childEnv: Record<string, string> = {};
+  if (process.env.PATH) childEnv.PATH = process.env.PATH;
+  if (process.env.HOME) childEnv.HOME = process.env.HOME;
+  if (process.env.TMPDIR) childEnv.TMPDIR = process.env.TMPDIR;
+  if (process.env.SystemRoot) childEnv.SystemRoot = process.env.SystemRoot;
+  childEnv.WS_PORT = String(internalPort);
+  childEnv.CONFIG_PATH = configPath;
+  if (isPackagedApp()) childEnv.ELECTRON_RUN_AS_NODE = "1";
+
   const child: ChildProcess = spawn(
     process.execPath,
     [paths.socketEntry],
     {
       cwd: paths.socketCwd,
-      env: {
-        ...process.env,
-        WS_PORT: String(internalPort),
-        CONFIG_PATH: configPath,
-        ...(isPackagedApp() ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
-      },
+      env: childEnv,
       stdio: ["ignore", "pipe", "pipe"],
     },
   );

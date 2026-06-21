@@ -114,6 +114,11 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    // Window/taskbar icon (Rahoot lightning mark). Resolved dir-relative the same
+    // way as `preload` below: __dirname is dist/main in dev and packaged, so this
+    // points at dist/icon.ico (copied by scripts/copy-assets.mjs, shipped via
+    // electron-builder `files: dist/**/*`).
+    icon: path.join(__dirname, "../icon.ico"),
     backgroundColor: "#faf7f0", // opaque cream
     titleBarStyle: "hidden", // frameless (Win11 shows native controls)
     titleBarOverlay: {
@@ -121,6 +126,7 @@ function createWindow(): void {
       symbolColor: "#6d28d9", // purple controls (Razzoozle brand)
       height: 40, // control bar height
     },
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
       contextIsolation: true,
@@ -385,45 +391,43 @@ ipcMain.handle(
 function createAutoLoginScript(password: string): string {
   return `
 (function autoLogin() {
+  if (window.__razzAutoLoginDone) return;
   const password = ${JSON.stringify(password)};
-  let attempts = 0;
-  const maxAttempts = 15; // ~3s at 200ms intervals
-
-  const trySubmit = () => {
+  function fill() {
+    if (!location.pathname.startsWith('/manager')) return;
     const inp = document.querySelector('input[type="password"]');
-    if (!inp) {
-      attempts++;
-      if (attempts < maxAttempts) {
-        setTimeout(trySubmit, 200);
-      } else {
-        console.log('[autologin] Password field not found after 3s');
-      }
-      return;
-    }
-
-    // Set value React-compatible way: get the setter and invoke it
+    if (!inp) return;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     if (setter) {
       setter.call(inp, password);
       inp.dispatchEvent(new Event('input', { bubbles: true }));
       inp.dispatchEvent(new Event('change', { bubbles: true }));
     }
-
-    // Find and click submit button
     const form = inp.closest('form');
     if (form && form.requestSubmit) {
       form.requestSubmit();
-      console.log('[autologin] Submitted via form.requestSubmit()');
     } else {
       const btn = document.querySelector('button[type="submit"], form button');
-      if (btn) {
-        btn.click();
-        console.log('[autologin] Submitted via button click');
-      }
+      if (btn) btn.click();
     }
-  };
+    window.__razzAutoLoginDone = true;
+  }
+  fill();
+  const observer = new MutationObserver(() => fill());
+  observer.observe(document, { childList: true, subtree: true });
+  setInterval(fill, 250);
 
-  trySubmit();
+  // CSS shim for app titlebar spacing (CHANGE 6)
+  if (!document.querySelector('[data-razzlogin-css-shim]')) {
+    const style = document.createElement('style');
+    style.dataset.razzloginCssShim = '';
+    style.textContent = \`body { padding-top: 40px; } .app-titlebar-shim { position: fixed; top: 0; left: 0; right: 0; height: 40px; -webkit-app-region: drag; z-index: 9999; } .app-titlebar-shim button, .app-titlebar-shim input { -webkit-app-region: no-drag; }\`;
+    document.head.appendChild(style);
+    const shim = document.createElement('div');
+    shim.className = 'app-titlebar-shim';
+    shim.dataset.razzloginTitlebar = '';
+    document.body.insertBefore(shim, document.body.firstChild);
+  }
 })();
 `;
 }
@@ -462,24 +466,34 @@ app.whenReady().then(async () => {
       logPath,
     });
 
-    const managerUrl = `http://127.0.0.1:${port}/manager/config`;
+    const managerUrl = `http://127.0.0.1:${port}/manager`;
+
+    // Register listeners BEFORE loadURL (CHANGE 1: blocking fix)
+    mainWindow!.webContents.on('did-finish-load', () => {
+      const script = createAutoLoginScript(managerPassword);
+      mainWindow?.webContents.executeJavaScript(script).catch(err => console.error('[autologin] Injection failed:', err));
+    });
+
+    mainWindow!.webContents.on('did-navigate-in-page', () => {
+      try {
+        const url = new URL(mainWindow!.webContents.getURL());
+        if (url.pathname === '/manager/config') {
+          mainWindow!.show();
+        }
+      } catch {}
+      const script = createAutoLoginScript(managerPassword);
+      mainWindow?.webContents.executeJavaScript(script).catch(err => console.error('[autologin] Injection failed:', err));
+    });
+
     await mainWindow!.loadURL(managerUrl);
 
-    // After page loads, inject auto-login script
-    mainWindow!.webContents.on("did-finish-load", () => {
-      const script = createAutoLoginScript(managerPassword);
-      mainWindow?.webContents
-        .executeJavaScript(script)
-        .catch((err) => console.error("[autologin] Injection failed:", err));
-    });
+    // Fallback show after timeout (CHANGE 4)
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+        mainWindow.show();
+      }
+    }, 7000);
 
-    // Re-inject on every navigation (e.g., re-auth after socket reconnect)
-    mainWindow!.webContents.on("did-navigate", () => {
-      const script = createAutoLoginScript(managerPassword);
-      mainWindow?.webContents
-        .executeJavaScript(script)
-        .catch((err) => console.error("[autologin] Injection failed:", err));
-    });
   } catch (err) {
     const errorMsg =
       err instanceof Error ? err.message : String(err);
@@ -504,7 +518,7 @@ app.whenReady().then(async () => {
   //      -> { decision, latestVersion, repo }  (gateway = decision only)
   //   2. on "go": electron-updater NATIVE github provider fetches latest.yml + .exe
   //   3. verify minisign(latest.yml) against the bundled pubkey BEFORE install
-  // See electron-builder.yml NOTE block + ci-cd-update-channel.md §5. Stubbed
+  //   See electron-builder.yml NOTE block + ci-cd-update-channel.md §5. Stubbed
   // out of this LAN-host skeleton (no gateway dependency for Mode A).
 });
 
