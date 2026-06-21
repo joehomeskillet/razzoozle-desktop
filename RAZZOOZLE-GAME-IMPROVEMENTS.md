@@ -89,3 +89,40 @@ Because these are in-page (no `did-finish-load` full reload), an embedder's relo
 
 ### Confirms #1
 The `registerTab` `Cannot add property … not extensible` was the real beta.6 white-screen; desktop beta.7 works around it by removing the game window's preload entirely (so `window.razzoozle` is never frozen). Implementing #1's defensive-merge would let the desktop restore an IPC preload safely — which it currently cannot, leaving the host-control IPC + gateway path inert (see desktop-side notes).
+
+---
+
+## Wave-3 addendum — join-URL override + same-network discovery (2026-06-21)
+
+A 5-model frontier panel (Opus 4.8 + GPT + Gemini 3.1 Pro + GLM 5.2 + DeepSeek-V4) red-teamed why the host lobby shows `http://127.0.0.1:7777` instead of a reachable address, and how a player can auto-connect direct-LAN when same-network. The desktop ships its half (active-LAN-IP detection, loading the manager from the active LAN IP, a Tray gateway toggle, and a gateway join page that opens the LAN candidate in a surviving `target="_blank"` tab). Two small game-side changes complete it.
+
+### A. [HIGH] Read `window.__RAZZ_JOIN_BASE` so an embedder can set the displayed join URL + QR
+The lobby builds the player-join URL **and** its QR from `window.location.origin` only, so inside any embed the host can never show the real LAN/gateway address. Let an embedder override the *base* (origin stays whatever served the page). The desktop already sets `window.__RAZZ_JOIN_BASE` (to the gateway join URL when the gateway is on, else `http://<active-lan-ip>:7777`) before the lobby renders.
+
+**Change — two reads, fully backward-compatible (falls back to origin when unset):**
+- `packages/web/src/features/game/utils/joinUrl.ts:9` — `buildJoinUrl(inviteCode, origin?)`:
+  ```ts
+  const base = origin ?? (window as any).__RAZZ_JOIN_BASE ?? window.location.origin
+  return `${base}?pin=${inviteCode}`
+  ```
+- `packages/web/src/features/game/components/states/Room.tsx:37` — the displayed text URL:
+  ```ts
+  const webUrl = (window as any).__RAZZ_JOIN_BASE ?? window.location.origin
+  ```
+With this, the lobby text **and** the QR (`Room.tsx:158,186` already pass `webUrl` into `buildJoinUrl`) show the address the host is actually reachable at. This is the clean fix the desktop's load-from-LAN-IP workaround approximates today.
+
+### B. [MEDIUM] Boot-time `/desktop-host/ping` verifier → reject captive portals on direct-LAN
+The discovery is *navigate-then-verify*: a player taps the LAN candidate (top-level `https→http` nav — the only browser-legal crossing; mixed-content forbids any pre-probe from the HTTPS gateway page), lands on `http://<lan-ip>:7777/?pin=<CODE>`, and the game already auto-joins via `io("/")` (`packages/web/src/features/game/contexts/socket-context.tsx:129`) + the `?pin` handler (`pages/.../join/Room.tsx:85-92`). That already works — **no change needed for the happy path.**
+
+The one enhancement: a **captive portal** (or any other server squatting the origin) returns *its own* HTML at `http://<lan-ip>:7777`, and the SPA would try to join a non-host. Before emitting `PLAYER.JOIN`, do a same-origin (legal — no mixed content) check against the host's existing liveness endpoint:
+```ts
+// pre-join boot check on the player route
+const r = await fetch('/desktop-host/ping', { cache: 'no-store' }).catch(() => null)
+const ok = r?.ok && (await r.json()).service === 'razzoozle-desktop-host'
+//  ↑ if a sessionId is present, compare it to the expected one too
+if (!ok) { /* show "couldn't reach the host — try from outside" + a link back to the gateway */ }
+```
+`/desktop-host/ping` already exists on the host (`local-server.ts`), same-origin, returns `{ok, service, protocolVersion, sessionId?}`. This is the only piece the game must add for robust same-network discovery; everything else lives in the desktop + gateway.
+
+### Contract (don't break)
+The lobby is the landing page for both direct-LAN and gateway joins: it must keep serving at the host origin, keep `buildJoinUrl` producing `${base}?pin=<inviteCode>`, and keep `io("/")` relative so a player landing on the host LAN origin connects straight to the host. The desktop carries the active LAN IP + gateway URL; the game just needs to *display the base it's handed* (A) and *verify the host before joining* (B).
