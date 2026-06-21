@@ -122,7 +122,7 @@ function createWindow(): void {
           nodeIntegration: false,
         },
         autoHideMenuBar: true,
-        backgroundColor: "#00000000", // Transparent so Mica shows through
+        backgroundColor: "#faf7f0", // Opaque cream base — reliable when Mica does not composite (VM / Win10 / transparency off); the window never renders blank
       });
 
       // Apply Mica material and light theme
