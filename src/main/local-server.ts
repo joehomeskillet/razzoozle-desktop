@@ -332,12 +332,18 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
   const configPath = opts.configPath ?? path.join(os.tmpdir(), "razzoozle-desktop-config");
   fs.mkdirSync(configPath, { recursive: true });
 
-  // --- BEGIN CHANGE 7: safe env construction ---
+  // Safe env construction — preserve only necessary variables
   const childEnv: Record<string, string> = {};
   if (process.env.PATH) childEnv.PATH = process.env.PATH;
   if (process.env.HOME) childEnv.HOME = process.env.HOME;
   if (process.env.TMPDIR) childEnv.TMPDIR = process.env.TMPDIR;
   if (process.env.SystemRoot) childEnv.SystemRoot = process.env.SystemRoot;
+  if (process.env.NODE_ENV) childEnv.NODE_ENV = process.env.NODE_ENV;
+  if (process.env.APPDATA) childEnv.APPDATA = process.env.APPDATA;
+  if (process.env.LOCALAPPDATA) childEnv.LOCALAPPDATA = process.env.LOCALAPPDATA;
+  if (process.env.TEMP) childEnv.TEMP = process.env.TEMP;
+  if (process.env.TMP) childEnv.TMP = process.env.TMP;
+  if (process.env.LANG) childEnv.LANG = process.env.LANG;
   childEnv.WS_PORT = String(internalPort);
   childEnv.CONFIG_PATH = configPath;
   if (isPackagedApp()) childEnv.ELECTRON_RUN_AS_NODE = "1";
@@ -347,7 +353,6 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
     env: childEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
-  // --- END CHANGE 7 ---
 
   child.stdout?.on("data", (d: Buffer) => log(`[socket] ${String(d).trimEnd()}`));
   child.stderr?.on("data", (d: Buffer) => log(`[socket:err] ${String(d).trimEnd()}`));

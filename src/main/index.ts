@@ -128,7 +128,6 @@ function createWindow(): void {
     },
     show: false,
     webPreferences: {
-      preload: path.join(__dirname, "../preload/index.js"),
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -393,6 +392,7 @@ function createAutoLoginScript(password: string): string {
 (function autoLogin() {
   if (window.__razzAutoLoginDone) return;
   const password = ${JSON.stringify(password)};
+  let observer, interval;
   function fill() {
     if (!location.pathname.startsWith('/manager')) return;
     const inp = document.querySelector('input[type="password"]');
@@ -411,17 +411,19 @@ function createAutoLoginScript(password: string): string {
       if (btn) btn.click();
     }
     window.__razzAutoLoginDone = true;
+    if (observer) observer.disconnect();
+    if (interval) clearInterval(interval);
   }
   fill();
-  const observer = new MutationObserver(() => fill());
+  observer = new MutationObserver(() => fill());
   observer.observe(document, { childList: true, subtree: true });
-  setInterval(fill, 250);
+  interval = setInterval(fill, 250);
 
-  // CSS shim for app titlebar spacing (CHANGE 6)
+  // CSS shim for app titlebar spacing
   if (!document.querySelector('[data-razzlogin-css-shim]')) {
     const style = document.createElement('style');
     style.dataset.razzloginCssShim = '';
-    style.textContent = 'body { padding-top: 40px; } .app-titlebar-shim { position: fixed; top: 0; left: 0; right: 0; height: 40px; -webkit-app-region: drag; z-index: 9999; } .app-titlebar-shim button, .app-titlebar-shim input { -webkit-app-region: no-drag; }';
+    style.textContent = '.app-titlebar-shim { position: fixed; top: 0; left: 0; right: 138px; height: 40px; -webkit-app-region: drag; z-index: 9999; } .app-titlebar-shim button, .app-titlebar-shim input { -webkit-app-region: no-drag; }';
     document.head.appendChild(style);
     const shim = document.createElement('div');
     shim.className = 'app-titlebar-shim';
@@ -468,7 +470,24 @@ app.whenReady().then(async () => {
 
     const managerUrl = `http://127.0.0.1:${port}/manager`;
 
-    // Register listeners BEFORE loadURL (CHANGE 1: blocking fix)
+    // Navigation guard helper
+    const isHostRoute = (p: string) => p.startsWith('/manager') || p.startsWith('/party/manager') || p.startsWith('/r/');
+
+    // Add will-navigate guard
+    mainWindow!.webContents.on('will-navigate', (e, url) => {
+      try {
+        const p = new URL(url).pathname;
+        if (!isHostRoute(p)) {
+          e.preventDefault();
+          mainWindow?.webContents.loadURL(managerUrl);
+        }
+      } catch {}
+    });
+
+    // Deny window open requests
+    mainWindow!.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
+    // Register listeners BEFORE loadURL
     mainWindow!.webContents.on('did-finish-load', () => {
       const script = createAutoLoginScript(managerPassword);
       mainWindow?.webContents.executeJavaScript(script).catch(err => console.error('[autologin] Injection failed:', err));
@@ -476,8 +495,12 @@ app.whenReady().then(async () => {
 
     mainWindow!.webContents.on('did-navigate-in-page', () => {
       try {
-        const url = new URL(mainWindow!.webContents.getURL());
-        if (url.pathname === '/manager/config') {
+        const gp = new URL(mainWindow!.webContents.getURL()).pathname;
+        if (!isHostRoute(gp)) {
+          mainWindow!.webContents.loadURL(managerUrl);
+          return;
+        }
+        if (gp === '/manager/config') {
           mainWindow!.show();
         }
       } catch {}
@@ -487,7 +510,7 @@ app.whenReady().then(async () => {
 
     await mainWindow!.loadURL(managerUrl);
 
-    // Fallback show after timeout (CHANGE 4)
+    // Fallback show after timeout
     setTimeout(() => {
       if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
         mainWindow.show();
