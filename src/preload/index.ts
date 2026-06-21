@@ -27,8 +27,6 @@ const api = {
   getGateway: (): Promise<string> => ipcRenderer.invoke("config:getGateway"),
   setGateway: (url: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke("config:setGateway", url),
-  makeJoinQr: (url: string): Promise<string> =>
-    ipcRenderer.invoke("qr:make", url),
 };
 
 contextBridge.exposeInMainWorld("razzoozle", api);
