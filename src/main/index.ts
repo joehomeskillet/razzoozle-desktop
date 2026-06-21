@@ -404,13 +404,23 @@ ipcMain.handle(
  * Idempotent — only acts when a password field is present. Interpolates the
  * password safely via JSON.stringify to avoid injection.
  */
-function createAutoLoginScript(password: string, reserveRightPx: number): string {
+function createAutoLoginScript(
+  password: string,
+  reserveRightPx: number,
+  joinBase: string,
+): string {
   // reserveRightPx is the DPI-scaled width the native window controls occupy at
   // the current display scale factor — keeps the drag strip clear of the
   // manager's top-right controls (DE / Logout) at 125%/150% Windows scale.
   const reserve = Number.isFinite(reserveRightPx) ? Math.ceil(reserveRightPx) : 138;
   return `
 (function autoLogin() {
+  // Game-hook: the lobby reads window.__RAZZ_JOIN_BASE as buildJoinUrl's base.
+  // When the gateway is on AND a session exists this is the gateway session
+  // joinUrl (remote-reachable); otherwise the active LAN http origin. Harmless
+  // until the game wires it up. Set unconditionally (outside the auto-login
+  // latch) so a re-inject after navigation keeps it current.
+  window.__RAZZ_JOIN_BASE = ${JSON.stringify(joinBase)};
   if (window.__razzAutoLoginDone) return;
   const password = ${JSON.stringify(password)};
   let observer, interval;
@@ -451,7 +461,11 @@ function createAutoLoginScript(password: string, reserveRightPx: number): string
   }
   style.textContent = '.app-titlebar-shim { position: fixed; top: 0; left: 0; right: ${reserve}px; height: 40px; -webkit-app-region: drag; z-index: 9999; } .app-titlebar-shim button, .app-titlebar-shim input { -webkit-app-region: no-drag; }'
     /* desktop: ComfyUI not bundled, hide image-gen */
-    + ' input[placeholder^="Beschreibe das Bild"], input[placeholder^="Beschreibe das Bild"] ~ div { display: none !important; }';
+    + ' input[placeholder^="Beschreibe das Bild"], input[placeholder^="Beschreibe das Bild"] ~ div { display: none !important; }'
+    /* desktop: hide Satellit/Vorschläge/Laufende Spiele */
+    + ' [id$="-tab-satellite"],[id$="-tab-submissions"],[id$="-tab-running"]{display:none !important;}'
+    /* clear native window controls via Window Controls Overlay env */
+    + ' .console-shell header{padding-right:max(1.5rem,calc(100vw - env(titlebar-area-width,100vw))) !important;}';
   if (!document.querySelector('[data-razzlogin-titlebar]')) {
     var shim = document.createElement('div');
     shim.className = 'app-titlebar-shim';
@@ -482,10 +496,29 @@ function computeReserveRightPx(): number {
  * did-navigate-in-page re-inject path.
  */
 function injectManagerScript(managerPassword: string): void {
-  const script = createAutoLoginScript(managerPassword, computeReserveRightPx());
+  const script = createAutoLoginScript(
+    managerPassword,
+    computeReserveRightPx(),
+    resolveJoinBase(),
+  );
   mainWindow?.webContents
     .executeJavaScript(script)
     .catch((err) => console.error("[autologin] Injection failed:", err));
+}
+
+/**
+ * The base URL the game lobby should use for join links (window.__RAZZ_JOIN_BASE).
+ * Prefer the gateway session joinUrl when the gateway is enabled AND a session
+ * exists (remote-reachable); otherwise the active LAN http origin
+ * (http://<lanIp>:<port>), falling back to loopback when no LAN exists.
+ */
+function resolveJoinBase(): string {
+  const port = DEFAULT_HOST_PORT;
+  if (getUseGateway() && gatewaySession?.joinUrl) {
+    return gatewaySession.joinUrl;
+  }
+  const lanIp = detectLanIpv4().ip ?? "127.0.0.1";
+  return `http://${lanIp}:${port}`;
 }
 
 let tray: Tray | null = null;
@@ -681,7 +714,16 @@ if (!gotLock) {
     // process only — no preload, no second BrowserWindow, no game collision.
     buildTray(port);
 
-    const managerUrl = `http://127.0.0.1:${port}/manager`;
+    // Load the manager from the ACTIVE LAN IP so window.location.origin becomes
+    // that LAN address — the game lobby's join URL + QR then encode the direct-
+    // LAN address (reachable by same-Wi-Fi players), not loopback. The front
+    // server binds 0.0.0.0, so the host can load its own LAN IP. Falls back to
+    // loopback when no LAN exists. The nav-guard below is pathname-based
+    // (origin-agnostic) and reuses this SAME host, so a guard redirect never
+    // flips the origin back to 127.0.0.1.
+    const lanIp = detectLanIpv4().ip;
+    const host = lanIp ?? '127.0.0.1';
+    const managerUrl = `http://${host}:${port}/manager`;
 
     // Navigation guard helper
     const isHostRoute = (p: string) => p.startsWith('/manager') || p.startsWith('/party/manager') || p.startsWith('/r/');
