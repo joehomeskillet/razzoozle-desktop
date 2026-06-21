@@ -11,9 +11,58 @@
 // interfaces).
 
 import os from "node:os";
+import dgram from "node:dgram";
 import { randomUUID } from "node:crypto";
 
 import type { HostCandidate } from "./protocol";
+
+// Cached default-route source IP (the address the kernel would use to reach the
+// public internet = the active NIC). undefined = not yet probed; null = probe
+// done but produced nothing. Computed once at host-start and reused so the hot
+// path never blocks.
+let cachedDefaultRouteIp: string | null | undefined = undefined;
+
+/**
+ * Best-effort default-route source IP via the UDP-connect trick. `connect()` on
+ * a UDP socket sends NO datagram — it only makes the kernel select the source IP
+ * it would use to reach the target, i.e. the active default-route NIC's IP.
+ *
+ * Synchronous-ish: createSocket + connect resolve the local address immediately
+ * on every platform we ship (Win/macOS/Linux) without any network round-trip, so
+ * we read s.address() inside a tight try/finally and close right away. Degrades
+ * to null on ANY error — it must never throw or block hosting. Result is cached.
+ */
+function detectDefaultRouteIpv4(): string | null {
+  if (cachedDefaultRouteIp !== undefined) return cachedDefaultRouteIp;
+  let ip: string | null = null;
+  let s: dgram.Socket | null = null;
+  try {
+    s = dgram.createSocket("udp4");
+    // No datagram is sent; connect() only triggers kernel source-IP selection.
+    s.connect(80, "1.1.1.1");
+    const addr = s.address();
+    if (addr && typeof addr.address === "string" && addr.address !== "0.0.0.0") {
+      ip = addr.address;
+    }
+  } catch {
+    ip = null; // degrade silently — never block hosting
+  } finally {
+    try {
+      s?.close();
+    } catch {
+      /* ignore */
+    }
+  }
+  cachedDefaultRouteIp = ip;
+  return ip;
+}
+
+/** The /24 prefix of an IPv4 (e.g. "192.168.1.42" -> "192.168.1."), or null. */
+function slash24(ip: string): string | null {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  return `${parts[0]}.${parts[1]}.${parts[2]}.`;
+}
 
 export interface LanDetectResult {
   /** The chosen LAN IPv4 (e.g. "192.168.1.42"), or null if only loopback. */
@@ -24,15 +73,18 @@ export interface LanDetectResult {
   warning: string | null;
 }
 
-// Interface-name prefixes we skip: virtual bridges, container nets, VPN/tunnel
-// adapters. These are real IPv4s but never the address a phone on the Wi-Fi can
-// reach, so they must not win the QR.
+// Interface-name fragments we skip: virtual bridges, container nets, VPN/tunnel
+// adapters — plus the Windows friendly virtual-adapter names (vEthernet (WSL),
+// Tailscale, ZeroTier, Hyper-V, Npcap loopback, Bluetooth PAN, …). These are
+// real IPv4s but never the address a phone on the Wi-Fi can reach, so they must
+// not win the QR. Substring + case-insensitive so "vEthernet (WSL)" is caught
+// even though the OS-prefix anchor would miss the friendly Windows name.
 const SKIP_NAME_RE =
-  /^(docker|br-|veth|virbr|vmnet|vboxnet|tun|tap|wg|zt|utun|llw|awdl)/i;
+  /(docker|br-|veth|virbr|vmnet|vboxnet|tun|tap|wg|zt|utun|llw|awdl|vethernet|wsl|tailscale|zerotier|hyper-v|loopback pseudo|npcap|bluetooth)/i;
 
-// True for an RFC1918 / link-local / CGNAT IPv4 — the ranges a same-LAN phone
-// can route to. We prefer these over any stray routable address.
-function isPrivateIpv4(ip: string): boolean {
+// RFC1918 LAN ranges — the addresses a same-LAN phone can actually route to.
+// These are the only ones we PREFER for the QR.
+function isRfc1918(ip: string): boolean {
   if (ip.startsWith("10.")) return true;
   if (ip.startsWith("192.168.")) return true;
   // 172.16.0.0 – 172.31.255.255
@@ -40,9 +92,15 @@ function isPrivateIpv4(ip: string): boolean {
     const second = Number(ip.split(".")[1]);
     return second >= 16 && second <= 31;
   }
-  // 169.254.0.0/16 link-local (last resort — usually means no DHCP lease).
+  return false;
+}
+
+// "Weak" LAN addresses — technically private but a poor QR target:
+//   169.254.0.0/16 link-local — almost always means NO DHCP lease.
+//   100.64.0.0/10 CGNAT — tethering/carrier NAT; routable only within that NAT.
+// Demoted, never preferred: only used if no real NIC exists.
+function isWeakLan(ip: string): boolean {
   if (ip.startsWith("169.254.")) return true;
-  // 100.64.0.0/10 CGNAT — common on tethering; routable within that NAT.
   if (ip.startsWith("100.")) {
     const second = Number(ip.split(".")[1]);
     return second >= 64 && second <= 127;
@@ -53,15 +111,21 @@ function isPrivateIpv4(ip: string): boolean {
 /**
  * Enumerate the host's own interfaces and pick the best LAN IPv4 for the QR.
  *
- * Order of preference:
- *   1. A private (RFC1918) IPv4 on a non-virtual interface — the normal case.
- *   2. Any non-internal IPv4 (still better than nothing).
- *   3. null + a warning if only loopback exists.
+ * Order of preference (a real RFC1918 LAN IP ALWAYS wins; 169.254 link-local and
+ * 100.64/10 CGNAT are demoted so they never become candidates[0] when a real NIC
+ * exists):
+ *   1. RFC1918 (10./192.168./172.16-31.) on a non-virtual interface. Within this
+ *      bucket: the IP matching the active default-route source IP (or sharing its
+ *      /24) wins; then a 192.168.* tiebreak (home Wi-Fi); else enumeration order.
+ *   2. Any other non-internal routable IPv4 (still better than a weak address).
+ *   3. Weak LAN: 169.254 link-local / 100.64-127 CGNAT (last resort).
+ *   4. null + a warning if only loopback exists.
  */
 export function detectLanIpv4(): LanDetectResult {
   const ifaces = os.networkInterfaces();
-  const privateCandidates: string[] = [];
-  const otherCandidates: string[] = [];
+  const rfc1918: string[] = [];
+  const other: string[] = [];
+  const weak: string[] = [];
 
   for (const [name, addrs] of Object.entries(ifaces)) {
     if (!addrs) continue;
@@ -73,15 +137,27 @@ export function detectLanIpv4(): LanDetectResult {
       if (!isV4) continue;
       if (addr.internal) continue; // skip 127.0.0.1 / loopback
 
-      if (isPrivateIpv4(addr.address)) {
-        privateCandidates.push(addr.address);
+      if (isRfc1918(addr.address)) {
+        rfc1918.push(addr.address);
+      } else if (isWeakLan(addr.address)) {
+        weak.push(addr.address);
       } else {
-        otherCandidates.push(addr.address);
+        other.push(addr.address);
       }
     }
   }
 
-  const candidates = [...privateCandidates, ...otherCandidates];
+  // Within RFC1918, prefer the NIC the kernel actually routes through. The
+  // default-route source IP (UDP-connect trick, cached) is the active Wi-Fi/
+  // Ethernet adapter; pick the exact match, else a same-/24 sibling, before
+  // falling back to the cheap 192.168.* home-Wi-Fi tiebreak.
+  if (rfc1918.length > 1) {
+    const routeIp = detectDefaultRouteIpv4();
+    const routePrefix = routeIp ? slash24(routeIp) : null;
+    rfc1918.sort((a, b) => rank1918(a, routeIp, routePrefix) - rank1918(b, routeIp, routePrefix));
+  }
+
+  const candidates = [...rfc1918, ...other, ...weak];
 
   if (candidates.length === 0) {
     return {
@@ -94,6 +170,18 @@ export function detectLanIpv4(): LanDetectResult {
   }
 
   return { ip: candidates[0], candidates, warning: null };
+}
+
+/** Lower rank = preferred. Default-route exact > same /24 > 192.168.* > rest. */
+function rank1918(
+  ip: string,
+  routeIp: string | null,
+  routePrefix: string | null,
+): number {
+  if (routeIp && ip === routeIp) return 0;
+  if (routePrefix && slash24(ip) === routePrefix) return 1;
+  if (ip.startsWith("192.168.")) return 2;
+  return 3;
 }
 
 // ── HostCandidate[] for the gateway (Phase-3, protocol.md §2.1) ──────────────
