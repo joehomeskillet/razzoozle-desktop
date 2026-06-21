@@ -434,6 +434,17 @@ ipcMain.handle(
   },
 );
 
+// IPC: render a styled join QR for a URL. The lobby patch uses this to build a
+// ?pin= auto-join QR from the game's room code, which is only known in the
+// renderer (per room). Returns an inline SVG string ("" on failure).
+ipcMain.handle("qr:make", (_evt, url: string): string => {
+  try {
+    return buildStyledQrSvg(String(url));
+  } catch {
+    return "";
+  }
+});
+
 /**
  * Auto-login injection script: polls for password input, submits it when found.
  * Idempotent — only acts when a password field is present. Interpolates the
@@ -547,6 +558,7 @@ function createAutoLoginScript(
       }
       // (2) join URL + (3) QR — only when the gateway is on (url differs from LAN)
       if (d.url && d.url !== d.lan) {
+        // URL text: LAN origin -> the relay host (clean, no pin)
         var ns = document.querySelectorAll('p, span, a');
         for (var j = 0; j < ns.length; j++) {
           var el = ns[j];
@@ -554,16 +566,45 @@ function createAutoLoginScript(
             el.textContent = d.url;
           }
         }
-        if (d.qr) {
+        // QR: encode the relay host + the game's room PIN so scanning AUTO-JOINS.
+        // The PIN is only in the page (per room) — read it (the largest plain
+        // alphanumeric <p>, i.e. the big PIN) and ask main to render the styled
+        // QR for <relay>/?pin=<code>. Falls back to the no-pin QR (d.qr) if the
+        // PIN can't be read or the bridge is unavailable.
+        var code = null, codeSize = 0;
+        var ps = document.querySelectorAll('p');
+        for (var p = 0; p < ps.length; p++) {
+          var pe = ps[p];
+          if (pe.children.length) continue;
+          var tx = (pe.textContent || '').trim();
+          if (!/^[A-Za-z0-9]{4,12}$/.test(tx)) continue;
+          if (tx === d.lan || /^https?:/i.test(tx)) continue;
+          var sz = parseFloat(getComputedStyle(pe).fontSize) || 0;
+          if (sz > codeSize) { codeSize = sz; code = tx; }
+        }
+        var marker = null, svg = null;
+        if (code && window.razzoozle && window.razzoozle.makeJoinQr) {
+          marker = 'pin:' + code;
+          if (window.__razzQrReq !== code) {
+            window.__razzQrReq = code;
+            var pinUrl = d.url.replace(/\\/+$/, '') + '/?pin=' + encodeURIComponent(code);
+            window.razzoozle.makeJoinQr(pinUrl).then(function (s) {
+              if (s) { window.__razzQrSvg = s; window.__razzQrSvgFor = code; window.__razzPatchLobby(); }
+            }).catch(function () {});
+          }
+          if (window.__razzQrSvgFor === code) svg = window.__razzQrSvg;
+        }
+        if (!svg && d.qr) { marker = d.url; svg = d.qr; }
+        if (svg) {
           var qd = document.querySelectorAll('.h-auto.w-auto, [class~="size-56"]');
           for (var k = 0; k < qd.length; k++) {
             var c = qd[k];
-            if (c.dataset.razzQr === d.url) continue;
+            if (c.dataset.razzQr === marker) continue;
             if (!c.querySelector('svg')) continue;
             try {
-              var qs = new DOMParser().parseFromString(d.qr, 'image/svg+xml').documentElement;
+              var qs = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
               qs.setAttribute('width', '100%'); qs.setAttribute('height', '100%');
-              c.replaceChildren(qs); c.dataset.razzQr = d.url;
+              c.replaceChildren(qs); c.dataset.razzQr = marker;
             } catch (e) {}
           }
         }
