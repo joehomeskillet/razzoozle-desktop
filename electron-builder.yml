@@ -1,5 +1,8 @@
 appId: xyz.razzoozle.desktop
 productName: Razzoozle
+# App icon (Rahoot lightning mark) — used for the .exe, desktop shortcut and as
+# the default Windows app icon. The same .ico drives the installer icons below.
+icon: build/icon.ico
 directories:
   output: release
 files:
@@ -33,6 +36,12 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
+  # Unify every installer surface on the Rahoot lightning mark.
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  installerHeader: build/installerHeader.bmp
+  installerSidebar: build/installerSidebar.bmp
 
 # Makes electron-updater use the NATIVE github provider and writes it into the
 # generated latest.yml (F3). The gateway is NOT a download source — it only
