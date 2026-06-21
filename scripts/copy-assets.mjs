@@ -14,3 +14,11 @@ const outDir = path.join(root, "dist", "renderer");
 fs.mkdirSync(outDir, { recursive: true });
 fs.copyFileSync(srcHtml, path.join(outDir, "index.html"));
 console.log("copied renderer/index.html -> dist/renderer/index.html");
+
+// Copy all .woff2 font files from src/renderer to dist/renderer
+for (const f of fs.readdirSync(path.dirname(srcHtml))) {
+  if (f.endsWith(".woff2")) {
+    fs.copyFileSync(path.join(path.dirname(srcHtml), f), path.join(outDir, f));
+    console.log(`copied renderer/${f} -> dist/renderer/${f}`);
+  }
+}
