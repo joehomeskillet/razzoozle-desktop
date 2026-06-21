@@ -1,6 +1,6 @@
 {
   "name": "razzoozle-desktop",
-  "version": "0.1.0-beta.7",
+  "version": "0.1.0-beta.8",
   "private": true,
   "description": "Razzoozle Desktop — host a Razzoozle quiz game on your own Windows machine so player phones on the same LAN connect directly (Mode A: LAN Direct).",
   "author": "joehomeskillet",
