@@ -427,23 +427,57 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
       path: req.url,
       headers: req.headers,
     });
+    // Happy path: the socket child accepts the upgrade (101). Relay its actual
+    // status line + headers (never hardcode 101) so a downgraded/redirected
+    // upgrade is reflected faithfully.
     proxyReq.on("upgrade", (proxyRes, proxySocket) => {
       const headers = Object.entries(proxyRes.headers)
         .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
         .join("\r\n");
-      clientSocket.write(`HTTP/1.1 101 Switching Protocols\r\n${headers}\r\n\r\n`);
+      const status = proxyRes.statusCode || 101;
+      const reason = proxyRes.statusMessage || "Switching Protocols";
+      clientSocket.write(`HTTP/1.1 ${status} ${reason}\r\n${headers}\r\n\r\n`);
       if (head && head.length) proxySocket.write(head);
       proxySocket.pipe(clientSocket);
       clientSocket.pipe(proxySocket);
       proxySocket.on("error", () => clientSocket.destroy());
       clientSocket.on("error", () => proxySocket.destroy());
     });
+    // Non-upgrade reply (auth/origin reject => no 101): relay the real status
+    // line + headers + body to the client and end, instead of corrupting the
+    // connection by forcing a 101.
+    proxyReq.on("response", (proxyRes) => {
+      const headers = Object.entries(proxyRes.headers)
+        .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
+        .join("\r\n");
+      const status = proxyRes.statusCode || 502;
+      const reason = proxyRes.statusMessage || "";
+      clientSocket.write(`HTTP/1.1 ${status} ${reason}\r\n${headers}\r\n\r\n`);
+      proxyRes.on("data", (chunk: Buffer) => clientSocket.write(chunk));
+      proxyRes.on("end", () => clientSocket.end());
+      proxyRes.on("error", () => clientSocket.destroy());
+    });
     proxyReq.on("error", () => clientSocket.destroy());
     proxyReq.end();
   });
 
   await new Promise<void>((resolve, reject) => {
-    front.once("error", reject);
+    front.once("error", (err: NodeJS.ErrnoException) => {
+      // EADDRINUSE: another instance already holds the public port. Kill the
+      // socket child we just spawned (it would otherwise leak as a zombie) and
+      // reject with a human-readable message instead of a raw Node error.
+      if (err && err.code === "EADDRINUSE") {
+        if (!childExited) child.kill();
+        reject(
+          new Error(
+            `Port ${opts.port} ist belegt — läuft Razzoozle bereits? Bitte die andere Instanz schließen.`,
+          ),
+        );
+        return;
+      }
+      if (!childExited) child.kill();
+      reject(err);
+    });
     front.listen(opts.port, "0.0.0.0", () => resolve());
   });
 

@@ -1,6 +1,6 @@
 {
   "name": "razzoozle-desktop",
-  "version": "0.1.0-beta.7",
+  "version": "0.1.0-beta.8",
   "private": true,
   "description": "Razzoozle Desktop — host a Razzoozle quiz game on your own Windows machine so player phones on the same LAN connect directly (Mode A: LAN Direct).",
   "author": "joehomeskillet",
@@ -16,6 +16,7 @@
     "dist": "electron-builder"
   },
   "dependencies": {
+    "electron-updater": "^6.3.9",
     "mica-electron": "^1.5.17",
     "qrcode": "^1.5.4"
   },
@@ -24,7 +25,6 @@
     "@types/qrcode": "^1.5.5",
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
-    "electron-updater": "^6.3.9",
     "typescript": "^5.7.2"
   }
 }

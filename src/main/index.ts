@@ -5,7 +5,8 @@
 // join URL (http://<lan-ip>:<port>/ — a TOP-LEVEL URL the phone navigates to,
 // per F4), generates a QR for it, and returns it all to the renderer.
 
-import { app, BrowserWindow, ipcMain, Menu } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, screen, Tray } from "electron";
+import { autoUpdater } from "electron-updater";
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -40,14 +41,14 @@ let gatewaySession: GatewaySession | null = null;
 
 // Gateway is OPT-IN. LAN-only Mode A must work with it disabled — hosting must
 // never depend on the gateway being reachable. Default OFF; flip with
-// RAZZOOZLE_GATEWAY_ENABLED=1 (or the UI toggle, passed per host:start call).
-function gatewayEnabledByDefault(): boolean {
-  return process.env.RAZZOOZLE_GATEWAY_ENABLED === "1";
-}
+// RAZZOOZLE_GATEWAY_ENABLED=1 (env, dev) or the Tray toggle (persisted in
+// config.json). See getUseGateway() below.
 
-// Persisted gateway URL config.
+// Persisted gateway config.
 interface Config {
   gatewayUrl?: string;
+  /** Persisted opt-in for outside-LAN remote-join via the gateway (Mode B). */
+  useGateway?: boolean;
 }
 
 function getConfigPath(): string {
@@ -77,6 +78,21 @@ function getGatewayUrl(): string {
   const config = readConfig();
   if (config.gatewayUrl) return config.gatewayUrl;
   return DEFAULT_GATEWAY_URL;
+}
+
+/**
+ * Persisted gateway opt-in. The env override (RAZZOOZLE_GATEWAY_ENABLED=1) still
+ * forces ON for dev; otherwise the value persisted by the Tray toggle wins.
+ */
+function getUseGateway(): boolean {
+  if (process.env.RAZZOOZLE_GATEWAY_ENABLED === "1") return true;
+  return readConfig().useGateway === true;
+}
+
+function setUseGateway(value: boolean): void {
+  const config = readConfig();
+  config.useGateway = value;
+  writeConfig(config);
 }
 
 // Result handed back to the renderer after a successful "start hosting".
@@ -284,7 +300,7 @@ ipcMain.handle(
     try {
       const lan = detectLanIpv4();
       const port = DEFAULT_HOST_PORT;
-      const useGateway = args?.useGateway ?? gatewayEnabledByDefault();
+      const useGateway = args?.useGateway ?? getUseGateway();
 
       if (!running) {
         // Persist the reused server's data under the app's userData dir, never in
@@ -365,9 +381,10 @@ ipcMain.handle(
   "config:setGateway",
   (_evt, url: string): { ok: boolean; error?: string } => {
     try {
-      // Validate URL format
-      if (!url.match(/^https?:\/\//i)) {
-        return { ok: false, error: "URL must start with http:// or https://" };
+      // Validate URL format. HTTPS-only: the rendezvous carries a Bearer token,
+      // so a plaintext gateway URL is rejected (no token over http).
+      if (!url.match(/^https:\/\//i)) {
+        return { ok: false, error: "URL must start with https://" };
       }
       const config = readConfig();
       config.gatewayUrl = url;
@@ -387,7 +404,11 @@ ipcMain.handle(
  * Idempotent — only acts when a password field is present. Interpolates the
  * password safely via JSON.stringify to avoid injection.
  */
-function createAutoLoginScript(password: string): string {
+function createAutoLoginScript(password: string, reserveRightPx: number): string {
+  // reserveRightPx is the DPI-scaled width the native window controls occupy at
+  // the current display scale factor — keeps the drag strip clear of the
+  // manager's top-right controls (DE / Logout) at 125%/150% Windows scale.
+  const reserve = Number.isFinite(reserveRightPx) ? Math.ceil(reserveRightPx) : 138;
   return `
 (function autoLogin() {
   if (window.__razzAutoLoginDone) return;
@@ -419,13 +440,20 @@ function createAutoLoginScript(password: string): string {
   observer.observe(document, { childList: true, subtree: true });
   interval = setInterval(fill, 250);
 
-  // CSS shim for app titlebar spacing
-  if (!document.querySelector('[data-razzlogin-css-shim]')) {
-    const style = document.createElement('style');
+  // CSS shim for app titlebar spacing + desktop-only hides. Re-applied (not
+  // appended) on every injection so the drag-strip reserve tracks the current
+  // DPI scale factor (recomputed in the did-navigate-in-page re-inject path).
+  var style = document.querySelector('[data-razzlogin-css-shim]');
+  if (!style) {
+    style = document.createElement('style');
     style.dataset.razzloginCssShim = '';
-    style.textContent = '.app-titlebar-shim { position: fixed; top: 0; left: 0; right: 138px; height: 40px; -webkit-app-region: drag; z-index: 9999; } .app-titlebar-shim button, .app-titlebar-shim input { -webkit-app-region: no-drag; }';
     document.head.appendChild(style);
-    const shim = document.createElement('div');
+  }
+  style.textContent = '.app-titlebar-shim { position: fixed; top: 0; left: 0; right: ${reserve}px; height: 40px; -webkit-app-region: drag; z-index: 9999; } .app-titlebar-shim button, .app-titlebar-shim input { -webkit-app-region: no-drag; }'
+    /* desktop: ComfyUI not bundled, hide image-gen */
+    + ' input[placeholder^="Beschreibe das Bild"], input[placeholder^="Beschreibe das Bild"] ~ div { display: none !important; }';
+  if (!document.querySelector('[data-razzlogin-titlebar]')) {
+    var shim = document.createElement('div');
     shim.className = 'app-titlebar-shim';
     shim.dataset.razzloginTitlebar = '';
     document.body.insertBefore(shim, document.body.firstChild);
@@ -434,8 +462,180 @@ function createAutoLoginScript(password: string): string {
 `;
 }
 
-app.whenReady().then(async () => {
-  createWindow();
+/**
+ * DPI-aware width (px) to reserve on the right of the drag strip for the native
+ * window controls. 138 logical px scaled by the current display's scaleFactor.
+ */
+function computeReserveRightPx(): number {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return 138;
+    const sf = screen.getDisplayMatching(mainWindow.getBounds()).scaleFactor || 1;
+    return Math.ceil(138 * sf);
+  } catch {
+    return 138;
+  }
+}
+
+/**
+ * Inject the auto-login + drag-strip + image-gen-hide script, recomputing the
+ * DPI reserve at injection time. Used by both did-finish-load and the
+ * did-navigate-in-page re-inject path.
+ */
+function injectManagerScript(managerPassword: string): void {
+  const script = createAutoLoginScript(managerPassword, computeReserveRightPx());
+  mainWindow?.webContents
+    .executeJavaScript(script)
+    .catch((err) => console.error("[autologin] Injection failed:", err));
+}
+
+let tray: Tray | null = null;
+
+/**
+ * Start the gateway session if enabled + not already running. Best-effort: a
+ * gateway failure never blocks LAN hosting. Returns true once a session exists.
+ */
+async function ensureGatewaySession(port: number): Promise<boolean> {
+  if (gatewaySession) return true;
+  const { session, error } = await startGatewaySession(port);
+  if (session) {
+    gatewaySession = session;
+    return true;
+  }
+  if (error) console.error("[gateway] session start failed:", error);
+  return false;
+}
+
+/**
+ * Inject a small dismissible "connection info" banner into the manager page:
+ * the LAN join URL and, if a gateway session exists, the gateway join URL+code.
+ * Main-process only (executeJavaScript) — no preload, no game collision.
+ */
+function showConnectionInfoBanner(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const lan = detectLanIpv4();
+  const lanUrl = `http://${lan.ip ?? "127.0.0.1"}:${DEFAULT_HOST_PORT}/`;
+  const gw = gatewaySession
+    ? { url: gatewaySession.joinUrl, code: gatewaySession.joinCode }
+    : null;
+  const payload = JSON.stringify({ lanUrl, gw });
+  const script = `
+(function () {
+  var data = ${payload};
+  var old = document.getElementById('razz-conn-info');
+  if (old) old.remove();
+  // Built entirely via safe DOM APIs (textContent / setAttribute) — no innerHTML,
+  // so the interpolated URLs/code can never inject markup into the manager page.
+  var box = document.createElement('div');
+  box.id = 'razz-conn-info';
+  box.style.cssText = 'position:fixed;top:48px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#faf7f0;color:#333;border:1px solid #6d28d9;border-radius:10px;padding:14px 18px;box-shadow:0 6px 24px rgba(0,0,0,.18);font-family:sans-serif;font-size:14px;max-width:90vw;';
+  function row(text) {
+    var d = document.createElement('div');
+    d.style.marginBottom = '6px';
+    if (text != null) d.textContent = text;
+    return d;
+  }
+  function link(url) {
+    var a = document.createElement('a');
+    a.setAttribute('href', url);
+    a.style.color = '#6d28d9';
+    a.textContent = url;
+    return a;
+  }
+  var title = row('Verbindungs-Info');
+  title.style.fontWeight = '700';
+  title.style.marginBottom = '8px';
+  box.appendChild(title);
+  var lanRow = row('LAN-Beitritt: ');
+  lanRow.appendChild(link(data.lanUrl));
+  box.appendChild(lanRow);
+  if (data.gw) {
+    var gwRow = row('Remote-Beitritt: ');
+    gwRow.appendChild(link(data.gw.url));
+    box.appendChild(gwRow);
+    var codeRow = row('Code: ');
+    var codeStrong = document.createElement('strong');
+    codeStrong.textContent = data.gw.code;
+    codeRow.appendChild(codeStrong);
+    box.appendChild(codeRow);
+  } else {
+    var offRow = row('Remote-Beitritt (Gateway) ist deaktiviert.');
+    offRow.style.color = '#888';
+    box.appendChild(offRow);
+  }
+  var close = document.createElement('button');
+  close.textContent = 'Schließen';
+  close.style.cssText = 'margin-top:6px;background:#6d28d9;color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;-webkit-app-region:no-drag';
+  close.onclick = function () { box.remove(); };
+  box.appendChild(close);
+  document.body.appendChild(box);
+})();
+`;
+  mainWindow.webContents
+    .executeJavaScript(script)
+    .catch((err) => console.error("[conn-info] inject failed:", err));
+}
+
+/**
+ * Build the system Tray (main-process control surface — NO preload, NO second
+ * window). Toggles the persisted gateway opt-in and live-(re)starts/stops the
+ * session, shows connection info, and quits.
+ */
+function buildTray(managerPort: number): void {
+  if (tray) return;
+  try {
+    tray = new Tray(path.join(__dirname, "../icon.ico"));
+  } catch (err) {
+    console.error("[tray] could not create tray:", err);
+    return;
+  }
+  tray.setToolTip("Razzoozle");
+  const rebuildMenu = (): void => {
+    const menu = Menu.buildFromTemplate([
+      {
+        label: "Remote-Beitritt (Gateway)",
+        type: "checkbox",
+        checked: getUseGateway(),
+        click: (item) => {
+          void (async () => {
+            const enabled = item.checked;
+            setUseGateway(enabled);
+            if (enabled) {
+              await ensureGatewaySession(managerPort);
+            } else {
+              await stopGatewaySession();
+            }
+            rebuildMenu();
+          })();
+        },
+      },
+      {
+        label: "Verbindungs-Info anzeigen",
+        click: () => showConnectionInfoBanner(),
+      },
+      { type: "separator" },
+      { label: "Beenden", click: () => app.quit() },
+    ]);
+    tray?.setContextMenu(menu);
+  };
+  rebuildMenu();
+}
+
+// Single-instance lock: a second launch must NOT spawn a second host (which
+// would hit port 7777 EADDRINUSE and brick). Focus the existing window instead.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+
+  app.whenReady().then(async () => {
+    createWindow();
 
   // Get or generate the manager password (secure, per-installation)
   const passwordStore = new ManagerPasswordStore();
@@ -449,11 +649,13 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.error("Failed to set up game config:", err);
     if (mainWindow) {
-      mainWindow.loadURL(
-        `data:text/html,<html><body style="font-family:sans-serif;padding:20px;background:#faf7f0;color:#333"><h1>Setup Error</h1><p>${encodeURIComponent(
-          `Failed to write game config: ${err instanceof Error ? err.message : String(err)}`,
-        )}</p></body></html>`,
-      );
+      const dataUrl = `data:text/html,<html><body style="font-family:sans-serif;padding:20px;background:#faf7f0;color:#333"><h1>Setup Error</h1><p>${encodeURIComponent(
+        `Failed to write game config: ${err instanceof Error ? err.message : String(err)}`,
+      )}</p></body></html>`;
+      await mainWindow
+        .loadURL(dataUrl)
+        .catch((e) => console.error("[error-page] load failed:", e));
+      mainWindow.show();
     }
     return;
   }
@@ -468,6 +670,17 @@ app.whenReady().then(async () => {
       logPath,
     });
 
+    // Mode B: register with the gateway when the persisted opt-in is on. The
+    // direct auto-start path otherwise never registers (LAN still works either
+    // way — gateway failures never block hosting).
+    if (getUseGateway()) {
+      await ensureGatewaySession(port);
+    }
+
+    // System tray control surface (toggle gateway / show info / quit). Main-
+    // process only — no preload, no second BrowserWindow, no game collision.
+    buildTray(port);
+
     const managerUrl = `http://127.0.0.1:${port}/manager`;
 
     // Navigation guard helper
@@ -479,9 +692,13 @@ app.whenReady().then(async () => {
         const p = new URL(url).pathname;
         if (!isHostRoute(p)) {
           e.preventDefault();
-          mainWindow?.webContents.loadURL(managerUrl);
+          mainWindow?.webContents
+            .loadURL(managerUrl)
+            .catch((reloadErr) => console.error('[nav-guard] reload failed:', reloadErr));
         }
-      } catch {}
+      } catch (e) {
+        console.error('[nav-guard]', e);
+      }
     });
 
     // Deny window open requests
@@ -489,46 +706,60 @@ app.whenReady().then(async () => {
 
     // Register listeners BEFORE loadURL
     mainWindow!.webContents.on('did-finish-load', () => {
-      const script = createAutoLoginScript(managerPassword);
-      mainWindow?.webContents.executeJavaScript(script).catch(err => console.error('[autologin] Injection failed:', err));
+      injectManagerScript(managerPassword);
     });
 
-    mainWindow!.webContents.on('did-navigate-in-page', () => {
+    mainWindow!.webContents.on('did-navigate-in-page', async () => {
       try {
         const gp = new URL(mainWindow!.webContents.getURL()).pathname;
         if (!isHostRoute(gp)) {
-          mainWindow!.webContents.loadURL(managerUrl);
+          mainWindow!.webContents
+            .loadURL(managerUrl)
+            .catch((reloadErr) => console.error('[nav-guard] reload failed:', reloadErr));
           return;
         }
         if (gp === '/manager/config') {
           mainWindow!.show();
         }
-      } catch {}
-      const script = createAutoLoginScript(managerPassword);
-      mainWindow?.webContents.executeJavaScript(script).catch(err => console.error('[autologin] Injection failed:', err));
+        // Bare /manager is the post-logout login form. The session-wide auto-
+        // login latch must reset so the next login screen is filled again;
+        // otherwise the host is stuck on an empty login form forever. NOT for
+        // /manager/config (already past login).
+        if (gp === '/manager') {
+          await mainWindow!.webContents
+            .executeJavaScript('window.__razzAutoLoginDone = false')
+            .catch(() => {});
+        }
+      } catch (e) {
+        console.error('[nav-guard]', e);
+      }
+      injectManagerScript(managerPassword);
     });
 
-    await mainWindow!.loadURL(managerUrl);
-
-    // Fallback show after timeout
+    // Arm the fallback show-timer BEFORE loadURL so a loadURL rejection (which
+    // jumps to the catch) can't leave the window invisible forever.
     setTimeout(() => {
       if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
         mainWindow.show();
       }
     }, 7000);
 
+    await mainWindow!.loadURL(managerUrl);
+
   } catch (err) {
     const errorMsg =
       err instanceof Error ? err.message : String(err);
     console.error("Failed to start host:", err);
     if (mainWindow) {
-      mainWindow.loadURL(
-        `data:text/html,<html><body style="font-family:sans-serif;padding:20px;background:#faf7f0;color:#333"><h1>Start Error</h1><p>${encodeURIComponent(
-          errorMsg,
-        )}</p><pre style="background:#f0f0f0;padding:10px;overflow:auto;max-height:300px;font-size:12px">${encodeURIComponent(
-          errorMsg,
-        )}</pre></body></html>`,
-      );
+      const dataUrl = `data:text/html,<html><body style="font-family:sans-serif;padding:20px;background:#faf7f0;color:#333"><h1>Start Error</h1><p>${encodeURIComponent(
+        errorMsg,
+      )}</p><pre style="background:#f0f0f0;padding:10px;overflow:auto;max-height:300px;font-size:12px">${encodeURIComponent(
+        errorMsg,
+      )}</pre></body></html>`;
+      await mainWindow
+        .loadURL(dataUrl)
+        .catch((e) => console.error("[error-page] load failed:", e));
+      mainWindow.show();
     }
   }
 
@@ -536,14 +767,35 @@ app.whenReady().then(async () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 
-  // TODO(F3): wire the update flow here on a timer / menu action:
-  //   1. GET https://gw.razzoozle.xyz/api/v1/update/stable?appVersion=<v>
-  //      -> { decision, latestVersion, repo }  (gateway = decision only)
-  //   2. on "go": electron-updater NATIVE github provider fetches latest.yml + .exe
-  //   3. verify minisign(latest.yml) against the bundled pubkey BEFORE install
-  //   See electron-builder.yml NOTE block + ci-cd-update-channel.md §5. Stubbed
-  // out of this LAN-host skeleton (no gateway dependency for Mode A).
-});
+  // electron-updater (F3): only in the packaged app, GitHub provider already
+  // configured in electron-builder.yml. allowPrerelease so beta tags are seen.
+  // We notify, never force quitAndInstall without the user's involvement.
+  if (app.isPackaged) {
+    const updateLogPath = path.join(app.getPath("userData"), "host.log");
+    const updLog = (line: string): void => {
+      console.log(line);
+      try {
+        fs.appendFileSync(updateLogPath, `${new Date().toISOString()} ${line}\n`);
+      } catch {
+        /* logging must never throw */
+      }
+    };
+    autoUpdater.allowPrerelease = true;
+    autoUpdater.on("update-available", (info) =>
+      updLog(`[updater] update-available ${info?.version ?? ""}`),
+    );
+    autoUpdater.on("update-downloaded", (info) =>
+      updLog(`[updater] update-downloaded ${info?.version ?? ""}`),
+    );
+    autoUpdater.on("error", (err) =>
+      updLog(`[updater] error ${err instanceof Error ? err.message : String(err)}`),
+    );
+    autoUpdater.checkForUpdatesAndNotify().catch((err) =>
+      updLog(`[updater] check failed ${err instanceof Error ? err.message : String(err)}`),
+    );
+  }
+  });
+}
 
 app.on("window-all-closed", () => {
   void (async () => {

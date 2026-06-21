@@ -69,3 +69,23 @@ For a **presenter/host** embed, landing on the player PIN screen is wrong — th
 
 ## Net effect
 With **#1 + #2 + #4 + #5** the desktop could drop: the preload-removal workaround, the DOM form-injection auto-login, the CSS shim, and the navigation guard — i.e. the game would be cleanly embeddable by any Electron/webview host with zero per-host hacks.
+
+---
+
+## Wave-2 addendum (broad subsystem red-team, 2026-06-21)
+
+Second hunt — 5 blind finders (frameless/update, socket-reconnect, gateway/IPC, env/image, silent-failure) across the live integration. Sharpens #2, #3, #5 with concrete mechanisms; confirms #1 was the real beta.6 white-screen (now worked around desktop-side by removing the game window's preload).
+
+### Sharpens #2 + #5 — logout / UNAUTHORIZED do **in-page** nav to `/manager` and null the password, breaking embedder auto-login
+The exact "host stuck on an empty login form forever" trap an embedded host hits:
+- `features/.../configurations/index.tsx:267-270` `handleLogout` → `reset()` (store `password → null`) + emits `MANAGER.LOGOUT`, **no navigate**; then `pages/manager/config.tsx:85-87` re-renders with `config === null` → `navigate({ to: '/manager' })` — an **in-page** (TanStack) transition.
+- `pages/manager/quizz/layout.tsx:30-32` on `MANAGER.UNAUTHORIZED` → `navigate({ to: '/manager' })`, also in-page.
+
+Because these are in-page (no `did-finish-load` full reload), an embedder's reload-keyed auto-login latch never re-fires, and `password` is already null so the store's reconnect re-auth (`config.tsx:38-42`) can't heal it either. The desktop now works around this with a path-scoped latch reset, but the clean fix is game-side: **emit a documented "re-auth required" signal** (or trigger a full reload) on logout / `UNAUTHORIZED` so any embedder can re-authenticate — the runtime companion to the #2 `window.razzoozle.login()` API.
+
+### Sharpens #3 — image provider is seeded ON but always fails in a packaged embed; identifier salt has a fixed public default
+- AI settings seed `image.activeProvider: "comfyui"` (`services/config.ts:1415`), so the manager's KI / Generate button is live — but in a packaged embed the workflow JSON is absent and ComfyUI (`http://127.0.0.1:8188`, `comfyui.ts:16`) isn't running → **every** generate throws `errors:submission.imageGenFailed` (caught at `comfyui.ts:177` → `IMAGE_ERROR` toast). Not a crash, but a 100%-failing visible feature. **Change:** detect provider availability and seed `activeProvider` to an off/unavailable state (or hide the generate action) when no ComfyUI is reachable, instead of erroring on every click.
+- `services/game/player-manager.ts:15` `process.env.RAZZOOZLE_IDENTIFIER_SALT ?? "razzoozle-default-salt"` → every install hashes player identifiers with the **same source-visible salt**. LAN-harmless, but worth a random per-install default (or documenting the env as recommended).
+
+### Confirms #1
+The `registerTab` `Cannot add property … not extensible` was the real beta.6 white-screen; desktop beta.7 works around it by removing the game window's preload entirely (so `window.razzoozle` is never frozen). Implementing #1's defensive-merge would let the desktop restore an IPC preload safely — which it currently cannot, leaving the host-control IPC + gateway path inert (see desktop-side notes).
