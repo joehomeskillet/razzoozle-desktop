@@ -25,6 +25,7 @@ import {
 } from "./protocol";
 import { startTunnel, wsBaseFromHttp, type TunnelHandle } from "./tunnel-client";
 import { RAZZOOZLE_LOGO_SVG } from "./brand-logo";
+import { buildStyledQrSvg } from "./styled-qr";
 
 let mainWindow: BrowserWindow | null = null;
 let running: RunningHost | null = null;
@@ -433,6 +434,17 @@ ipcMain.handle(
   },
 );
 
+// IPC: render a styled join QR for a URL. The lobby patch uses this to build a
+// ?pin= auto-join QR from the game's room code, which is only known in the
+// renderer (per room). Returns an inline SVG string ("" on failure).
+ipcMain.handle("qr:make", (_evt, url: string): string => {
+  try {
+    return buildStyledQrSvg(String(url));
+  } catch {
+    return "";
+  }
+});
+
 /**
  * Auto-login injection script: polls for password input, submits it when found.
  * Idempotent — only acts when a password field is present. Interpolates the
@@ -441,16 +453,17 @@ ipcMain.handle(
 function createAutoLoginScript(
   password: string,
   joinBase: string,
+  lanOrigin: string,
+  qrSvg: string | null,
   logoSvg: string,
 ): string {
   return `
 (function autoLogin() {
-  // Game-hook: the lobby reads window.__RAZZ_HOST or legacy window.__RAZZ_JOIN_BASE.
-  // When the gateway is on AND a session exists, joinBase is the gateway session
-  // joinUrl (remote-reachable); otherwise the active LAN http origin. Set
-  // unconditionally (outside the auto-login latch) so a re-inject after navigation
-  // keeps it current.
-  window.__RAZZ_HOST = { version: 1, joinBase: ${JSON.stringify(joinBase)} };
+  // Game-hook: the lobby reads window.__RAZZ_JOIN_BASE as buildJoinUrl's base.
+  // When the gateway is on AND a session exists this is the gateway session
+  // joinUrl (remote-reachable); otherwise the active LAN http origin. Harmless
+  // until the game wires it up. Set unconditionally (outside the auto-login
+  // latch) so a re-inject after navigation keeps it current.
   window.__RAZZ_JOIN_BASE = ${JSON.stringify(joinBase)};
   if (window.__razzAutoLoginDone) return;
   const password = ${JSON.stringify(password)};
@@ -508,12 +521,14 @@ function createAutoLoginScript(
     + ' section[style*="--game-fg"] .justify-between.p-4{padding-right:max(1rem,calc(100vw - env(titlebar-area-width,100vw))) !important;}';
 
   // Lobby DOM patch (the game is read-only): render the Razzoozle wordmark in
-  // place of the plain title text. The game now reads the contract
-  // (window.__RAZZ_HOST) to build join URLs and QRs natively, so the desktop
-  // just needs to inject the logo. Idempotent + best-effort (a failure never
-  // affects hosting). Built via the DOM API (DOMParser/replaceChildren), no
-  // innerHTML.
+  // place of the plain title text, and — when the gateway is on — show the
+  // gateway join URL instead of the LAN origin and swap the QR to match. All
+  // idempotent + best-effort (a failure never affects hosting). Built via the
+  // DOM API (DOMParser/replaceChildren/textContent), no innerHTML.
   window.__razzLobbyData = {
+    lan: ${JSON.stringify(lanOrigin)},
+    url: ${JSON.stringify(joinBase)},
+    qr: ${qrSvg ? JSON.stringify(qrSvg) : "null"},
     logo: ${JSON.stringify(logoSvg)}
   };
   window.__razzPatchLobby = function () {
@@ -536,6 +551,59 @@ function createAutoLoginScript(
             h.replaceChildren(ls);
             h.dataset.razzLogo = '1';
           } catch (e) {}
+        }
+      }
+      // (2) join URL + (3) QR — only when the gateway is on (url differs from LAN)
+      if (d.url && d.url !== d.lan) {
+        // URL text: LAN origin -> the relay host (clean, no pin)
+        var ns = document.querySelectorAll('p, span, a');
+        for (var j = 0; j < ns.length; j++) {
+          var el = ns[j];
+          if (el.children.length === 0 && (el.textContent || '').trim() === d.lan) {
+            el.textContent = d.url;
+          }
+        }
+        // QR: encode the relay host + the game's room PIN so scanning AUTO-JOINS.
+        // The PIN is only in the page (per room) — read it (the largest plain
+        // alphanumeric <p>, i.e. the big PIN) and ask main to render the styled
+        // QR for <relay>/?pin=<code>. Falls back to the no-pin QR (d.qr) if the
+        // PIN can't be read or the bridge is unavailable.
+        var code = null, codeSize = 0;
+        var ps = document.querySelectorAll('p');
+        for (var p = 0; p < ps.length; p++) {
+          var pe = ps[p];
+          if (pe.children.length) continue;
+          var tx = (pe.textContent || '').trim();
+          if (!/^[A-Za-z0-9]{4,12}$/.test(tx)) continue;
+          if (tx === d.lan || /^https?:/i.test(tx)) continue;
+          var sz = parseFloat(getComputedStyle(pe).fontSize) || 0;
+          if (sz > codeSize) { codeSize = sz; code = tx; }
+        }
+        var marker = null, svg = null;
+        if (code && window.razzoozle && window.razzoozle.makeJoinQr) {
+          marker = 'pin:' + code;
+          if (window.__razzQrReq !== code) {
+            window.__razzQrReq = code;
+            var pinUrl = d.url.replace(/\\/+$/, '') + '/?pin=' + encodeURIComponent(code);
+            window.razzoozle.makeJoinQr(pinUrl).then(function (s) {
+              if (s) { window.__razzQrSvg = s; window.__razzQrSvgFor = code; window.__razzPatchLobby(); }
+            }).catch(function () {});
+          }
+          if (window.__razzQrSvgFor === code) svg = window.__razzQrSvg;
+        }
+        if (!svg && d.qr) { marker = d.url; svg = d.qr; }
+        if (svg) {
+          var qd = document.querySelectorAll('.h-auto.w-auto, [class~="size-56"]');
+          for (var k = 0; k < qd.length; k++) {
+            var c = qd[k];
+            if (c.dataset.razzQr === marker) continue;
+            if (!c.querySelector('svg')) continue;
+            try {
+              var qs = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
+              qs.setAttribute('width', '100%'); qs.setAttribute('height', '100%');
+              c.replaceChildren(qs); c.dataset.razzQr = marker;
+            } catch (e) {}
+          }
         }
       }
     } catch (e) {}
@@ -562,9 +630,23 @@ function createAutoLoginScript(
  */
 async function injectManagerScript(managerPassword: string): Promise<void> {
   const joinBase = resolveJoinBase();
+  const lanIp = detectLanIpv4().ip ?? "127.0.0.1";
+  const lanOrigin = `http://${lanIp}:${DEFAULT_HOST_PORT}`;
+  // Regenerate a QR for the gateway join URL only when the gateway is on
+  // (joinBase differs from the LAN origin). On-brand dark = secondary ink-violet.
+  let qrSvg: string | null = null;
+  if (joinBase !== lanOrigin) {
+    try {
+      qrSvg = buildStyledQrSvg(joinBase);
+    } catch (err) {
+      console.error("[lobby-patch] QR generation failed:", err);
+    }
+  }
   const script = createAutoLoginScript(
     managerPassword,
     joinBase,
+    lanOrigin,
+    qrSvg,
     RAZZOOZLE_LOGO_SVG,
   );
   mainWindow?.webContents
