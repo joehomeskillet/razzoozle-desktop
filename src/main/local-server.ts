@@ -71,7 +71,10 @@ const MIME: Record<string, string> = {
 // Requests whose path starts with one of these go to the socket child, NOT the
 // static bundle. Everything else falls back to web/dist (SPA). Mirrors the
 // nginx location blocks (Razzoozle docker/nginx.conf): /ws, /api, /healthz,
-// /metrics, /r/, /plugins/, /theme/, /media/ are owned by the socket server.
+// /metrics, /r/, /plugins/ are owned by the socket server.
+// NOTE: /theme/ and /media/ are NOT here — in prod nginx serves them statically
+// from the config volume (the socket has no static handler for them, so proxying
+// them just 404s). The front server serves them from CONFIG_PATH instead.
 const PROXY_PREFIXES = [
   "/ws",
   "/api",
@@ -79,8 +82,6 @@ const PROXY_PREFIXES = [
   "/metrics",
   "/r/",
   "/plugins/",
-  "/theme/",
-  "/media/",
 ];
 
 /**
@@ -332,6 +333,22 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
   const configPath = opts.configPath ?? path.join(os.tmpdir(), "razzoozle-desktop-config");
   fs.mkdirSync(configPath, { recursive: true });
 
+  // Seed default runtime-theme assets so the player console's optional probes
+  // resolve 200 instead of 404: the web app fetches /theme/theme.json on load
+  // (an empty {} makes it backfill every theme default — identical look) and the
+  // room SPA loads /theme/firstcorrect.mp3. A manager-set theme overwrites these.
+  // seed-if-absent so a custom theme is never clobbered.
+  const themeSeedDir = path.join(configPath, "theme");
+  fs.mkdirSync(themeSeedDir, { recursive: true });
+  if (!fs.existsSync(path.join(themeSeedDir, "theme.json"))) {
+    fs.writeFileSync(path.join(themeSeedDir, "theme.json"), "{}");
+  }
+  const firstCorrectMp3 = path.join(themeSeedDir, "firstcorrect.mp3");
+  if (!fs.existsSync(firstCorrectMp3)) {
+    const fallbackSound = path.join(paths.webDist, "sounds", "boump.mp3");
+    if (fs.existsSync(fallbackSound)) fs.copyFileSync(fallbackSound, firstCorrectMp3);
+  }
+
   // Safe env construction — preserve only necessary variables
   const childEnv: Record<string, string> = {};
   if (process.env.PATH) childEnv.PATH = process.env.PATH;
@@ -404,6 +421,18 @@ export async function startHost(opts: StartOptions): Promise<RunningHost> {
         "cache-control": "no-store",
       });
       res.end(body);
+      return;
+    }
+
+    // /theme/ and /media/ are runtime config assets (manager-set theme files +
+    // uploaded media), persisted by the socket under CONFIG_PATH. In prod nginx
+    // serves them statically from the config volume; the socket has no static
+    // handler, so serve them here from CONFIG_PATH (seeded defaults live there
+    // too). Missing -> 404; never proxy (the socket would just 404).
+    if (pathOnly.startsWith("/theme/") || pathOnly.startsWith("/media/")) {
+      if (tryServeStatic(configPath, url, res)) return;
+      res.writeHead(404);
+      res.end();
       return;
     }
 
