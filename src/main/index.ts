@@ -465,7 +465,8 @@ function createAutoLoginScript(
     /* desktop: hide Satellit/Vorschläge/Laufende Spiele */
     + ' [id$="-tab-satellite"],[id$="-tab-submissions"],[id$="-tab-running"]{display:none !important;}'
     /* clear native window controls via Window Controls Overlay env */
-    + ' .console-shell header{padding-right:max(1.5rem,calc(100vw - env(titlebar-area-width,100vw))) !important;}';
+    + ' .console-shell header{padding-right:max(1.5rem,calc(100vw - env(titlebar-area-width,100vw))) !important;}'
+    + ' section[style*="--game-fg"] .justify-between.p-4{padding-right:max(1rem,calc(100vw - env(titlebar-area-width,100vw))) !important;}';
   if (!document.querySelector('[data-razzlogin-titlebar]')) {
     var shim = document.createElement('div');
     shim.className = 'app-titlebar-shim';
