@@ -5,7 +5,7 @@
 // join URL (http://<lan-ip>:<port>/ — a TOP-LEVEL URL the phone navigates to,
 // per F4), generates a QR for it, and returns it all to the renderer.
 
-import { app, BrowserWindow, ipcMain, Menu, screen, Tray } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, Tray } from "electron";
 import { autoUpdater } from "electron-updater";
 import fs from "node:fs";
 import path from "node:path";
@@ -452,16 +452,11 @@ ipcMain.handle("qr:make", (_evt, url: string): string => {
  */
 function createAutoLoginScript(
   password: string,
-  reserveRightPx: number,
   joinBase: string,
   lanOrigin: string,
   qrSvg: string | null,
   logoSvg: string,
 ): string {
-  // reserveRightPx is the DPI-scaled width the native window controls occupy at
-  // the current display scale factor — keeps the drag strip clear of the
-  // manager's top-right controls (DE / Logout) at 125%/150% Windows scale.
-  const reserve = Number.isFinite(reserveRightPx) ? Math.ceil(reserveRightPx) : 138;
   return `
 (function autoLogin() {
   // Game-hook: the lobby reads window.__RAZZ_JOIN_BASE as buildJoinUrl's base.
@@ -499,20 +494,20 @@ function createAutoLoginScript(
   observer.observe(document, { childList: true, subtree: true });
   interval = setInterval(fill, 250);
 
-  // CSS shim for app titlebar spacing + desktop-only hides. Re-applied (not
-  // appended) on every injection so the drag-strip reserve tracks the current
-  // DPI scale factor (recomputed in the did-navigate-in-page re-inject path).
+  // Desktop-only CSS: make the manager/game headers the window-drag region
+  // (interactive children stay clickable) + a few hides. Re-applied (not
+  // appended) on every injection so a re-inject after navigation keeps it.
   var style = document.querySelector('[data-razzlogin-css-shim]');
   if (!style) {
     style = document.createElement('style');
     style.dataset.razzloginCssShim = '';
     document.head.appendChild(style);
   }
-  // ponytail: +320px clears the manager's top-right control cluster (game
-  // header Exit/QR/mute/… or console DE/Logout) so the z9999 drag strip stops
-  // eating their clicks. 320 = heuristic upper bound; widen if a plugin adds
-  // more header buttons.
-  style.textContent = '.app-titlebar-shim { position: fixed; top: 0; left: 0; right: calc(${reserve}px + 320px); height: 40px; -webkit-app-region: drag; z-index: 9999; } .app-titlebar-shim button, .app-titlebar-shim input { -webkit-app-region: no-drag; }'
+  // Titlebar drag: the headers themselves are the drag region; their interactive
+  // children are no-drag. No covering overlay, so no button hitbox is ever eaten
+  // (Auto-Modus toggle on the left, Exit/QR/icons on the right, console DE).
+  style.textContent = '.console-shell header, section[style*="--game-fg"] .justify-between.p-4 { -webkit-app-region: drag; }'
+    + ' .console-shell header button, .console-shell header a, .console-shell header input, .console-shell header select, .console-shell header label, .console-shell header [role="button"], .console-shell header [role="switch"], section[style*="--game-fg"] .justify-between.p-4 button, section[style*="--game-fg"] .justify-between.p-4 a, section[style*="--game-fg"] .justify-between.p-4 input, section[style*="--game-fg"] .justify-between.p-4 select, section[style*="--game-fg"] .justify-between.p-4 label, section[style*="--game-fg"] .justify-between.p-4 [role="button"], section[style*="--game-fg"] .justify-between.p-4 [role="switch"] { -webkit-app-region: no-drag; }'
     /* desktop: ComfyUI not bundled, hide image-gen */
     + ' input[placeholder^="Beschreibe das Bild"], input[placeholder^="Beschreibe das Bild"] ~ div { display: none !important; }'
     /* desktop: hide Satellit/Vorschläge/Laufende Spiele */
@@ -524,12 +519,6 @@ function createAutoLoginScript(
     /* clear native window controls via Window Controls Overlay env */
     + ' .console-shell header{padding-right:max(1.5rem,calc(100vw - env(titlebar-area-width,100vw))) !important;}'
     + ' section[style*="--game-fg"] .justify-between.p-4{padding-right:max(1rem,calc(100vw - env(titlebar-area-width,100vw))) !important;}';
-  if (!document.querySelector('[data-razzlogin-titlebar]')) {
-    var shim = document.createElement('div');
-    shim.className = 'app-titlebar-shim';
-    shim.dataset.razzloginTitlebar = '';
-    document.body.insertBefore(shim, document.body.firstChild);
-  }
 
   // Lobby DOM patch (the game is read-only): render the Razzoozle wordmark in
   // place of the plain title text, and — when the gateway is on — show the
@@ -635,20 +624,6 @@ function createAutoLoginScript(
 }
 
 /**
- * DPI-aware width (px) to reserve on the right of the drag strip for the native
- * window controls. 138 logical px scaled by the current display's scaleFactor.
- */
-function computeReserveRightPx(): number {
-  try {
-    if (!mainWindow || mainWindow.isDestroyed()) return 138;
-    const sf = screen.getDisplayMatching(mainWindow.getBounds()).scaleFactor || 1;
-    return Math.ceil(138 * sf);
-  } catch {
-    return 138;
-  }
-}
-
-/**
  * Inject the auto-login + drag-strip + image-gen-hide script, recomputing the
  * DPI reserve at injection time. Used by both did-finish-load and the
  * did-navigate-in-page re-inject path.
@@ -669,7 +644,6 @@ async function injectManagerScript(managerPassword: string): Promise<void> {
   }
   const script = createAutoLoginScript(
     managerPassword,
-    computeReserveRightPx(),
     joinBase,
     lanOrigin,
     qrSvg,
