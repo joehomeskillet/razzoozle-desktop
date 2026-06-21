@@ -106,65 +106,17 @@ export interface HostStartResult {
 }
 
 function createWindow(): void {
-  let win: BrowserWindow;
-
-  // Use MicaBrowserWindow on Windows, fall back to BrowserWindow on other platforms
-  if (process.platform === "win32") {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires,global-require
-      const mica = require("mica-electron") as typeof import("mica-electron");
-      win = new mica.MicaBrowserWindow({
-        width: 720,
-        height: 760,
-        webPreferences: {
-          preload: path.join(__dirname, "../preload/index.js"),
-          contextIsolation: true,
-          nodeIntegration: false,
-        },
-        autoHideMenuBar: true,
-        backgroundColor: "#faf7f0", // Opaque cream base — reliable when Mica does not composite (VM / Win10 / transparency off); the window never renders blank
-      });
-
-      // Apply Mica material and light theme
-      try {
-        // Cast the instance to access Mica-specific methods
-        const micaWin = win as unknown as {
-          setLightTheme(): void;
-          setMicaEffect(): void;
-        };
-        micaWin.setLightTheme();
-        if (mica.IS_WINDOWS_11) {
-          micaWin.setMicaEffect();
-        }
-      } catch (err) {
-        console.error("Failed to apply Mica effect:", err);
-      }
-    } catch (err) {
-      console.error("Failed to load mica-electron, falling back to standard BrowserWindow:", err);
-      win = new BrowserWindow({
-        width: 720,
-        height: 760,
-        webPreferences: {
-          preload: path.join(__dirname, "../preload/index.js"),
-          contextIsolation: true,
-          nodeIntegration: false,
-        },
-      });
-    }
-  } else {
-    // Non-Windows: use standard BrowserWindow
-    win = new BrowserWindow({
-      width: 720,
-      height: 760,
-      webPreferences: {
-        preload: path.join(__dirname, "../preload/index.js"),
-        contextIsolation: true,
-        nodeIntegration: false,
-      },
-    });
-  }
-
-  mainWindow = win;
+  mainWindow = new BrowserWindow({
+    width: 720,
+    height: 760,
+    backgroundColor: "#faf7f0", // opaque cream — renders reliably on every machine (Mica needs compositing we cannot guarantee)
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, "../preload/index.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
   void mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
   mainWindow.on("closed", () => (mainWindow = null));
 }
