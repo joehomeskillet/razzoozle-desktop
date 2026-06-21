@@ -1,49 +1,158 @@
-// Manager password persistence — secure per-installation credential.
+// Manager password persistence — per-installation credential stored in Windows Registry.
 //
-// On first run, generates a random base64url password (18 bytes → 24 chars).
-// Persists encrypted-at-rest under the app's userData dir using Electron
-// safeStorage (OS-backed: DPAPI on Windows, Keychain on macOS, libsecret on
-// Linux). Reuses the same password on every launch, never plaintext.
+// On Windows:
+//   - For machine installs (under Program Files): stored in HKLM\Software\Razzoozle
+//   - For per-user installs (e.g. LocalAppData): stored in HKCU\Software\Razzoozle
+//   - Uses reg.exe to read/write the registry value (REG_SZ)
+//   - If registry write fails (e.g. HKLM without admin), falls back to plaintext file
 //
-// If safeStorage is unavailable, falls back to plaintext (still random per
-// install, never crashes).
+// On Linux/macOS:
+//   - Uses plaintext file in userData (for dev/testing)
+//   - Generates a random base64url password (18 bytes → 24 chars) on first run
+//
+// Always returns the same cached password on subsequent calls within the process.
 
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
 
-interface SafeStorageLike {
-  isEncryptionAvailable(): boolean;
-  encryptString(s: string): Buffer;
-  decryptString(b: Buffer): string;
-}
-
-function loadElectron(): { userData: string; safeStorage: SafeStorageLike } {
+function loadElectron(): string {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const electron = require("electron") as {
     app: { getPath(name: "userData"): string };
-    safeStorage: SafeStorageLike;
   };
-  return {
-    userData: electron.app.getPath("userData"),
-    safeStorage: electron.safeStorage,
-  };
+  return electron.app.getPath("userData");
 }
 
 /**
- * Securely persist and retrieve the manager password. Encrypted via Electron
- * safeStorage; plaintext fallback if encryption unavailable.
+ * Determine the registry hive based on install scope.
+ * If the executable is under Program Files, use HKLM (machine); otherwise HKCU (per-user).
+ */
+function getRegistryHive(): "HKCU" | "HKLM" {
+  const execPath = process.execPath.toLowerCase();
+  const programFiles = process.env["ProgramFiles"]?.toLowerCase() ?? "";
+  const programFilesX86 = process.env["ProgramFiles(x86)"]?.toLowerCase() ?? "";
+
+  if (
+    (programFiles && execPath.includes(programFiles)) ||
+    (programFilesX86 && execPath.includes(programFilesX86)) ||
+    execPath.includes("\\program files")
+  ) {
+    return "HKLM";
+  }
+  return "HKCU";
+}
+
+/**
+ * Read password from Windows Registry (HKCU or HKLM).
+ * Returns the password string if found, null if not present or read fails.
+ */
+function readPasswordFromRegistry(): string | null {
+  if (process.platform !== "win32") return null;
+
+  try {
+    const hive = getRegistryHive();
+    const output = execFileSync(
+      "reg",
+      ["query", `${hive}\\Software\\Razzoozle`, "/v", "ManagerPassword"],
+      { windowsHide: true, encoding: "utf8" },
+    );
+
+    // Parse the reg query output: find the line with ManagerPassword and extract the value
+    // Format: "    ManagerPassword    REG_SZ    <value>"
+    const lines = output.split(/\r?\n/);
+    for (const line of lines) {
+      if (line.includes("ManagerPassword")) {
+        const parts = line.split(/REG_SZ/i);
+        if (parts.length >= 2) {
+          const value = parts[1].trim();
+          if (value) return value;
+        }
+      }
+    }
+
+    return null;
+  } catch {
+    // Registry key doesn't exist or read failed
+    return null;
+  }
+}
+
+/**
+ * Write password to Windows Registry (HKCU or HKLM).
+ * If registry write fails, falls back to writing to a plaintext file.
+ * Always returns the password (either from registry or fallback file).
+ */
+function writePasswordToRegistry(password: string, userData: string): string {
+  if (process.platform !== "win32") {
+    // Non-Windows: fall back to plaintext file
+    return writePasswordToFile(password, userData);
+  }
+
+  try {
+    const hive = getRegistryHive();
+    execFileSync(
+      "reg",
+      [
+        "add",
+        `${hive}\\Software\\Razzoozle`,
+        "/v",
+        "ManagerPassword",
+        "/t",
+        "REG_SZ",
+        "/d",
+        password,
+        "/f",
+      ],
+      { windowsHide: true },
+    );
+    return password;
+  } catch (err) {
+    // Registry write failed (e.g. HKLM without admin permissions)
+    // Fall back to plaintext file
+    console.warn("Failed to write manager password to registry:", err);
+    return writePasswordToFile(password, userData);
+  }
+}
+
+/**
+ * Read password from plaintext fallback file in userData.
+ */
+function readPasswordFromFile(userData: string): string | null {
+  const file = path.join(userData, "manager-pass.txt");
+  try {
+    if (fs.existsSync(file)) {
+      const content = fs.readFileSync(file, "utf8").trim();
+      if (content) return content;
+    }
+  } catch (err) {
+    console.warn("Failed to read manager password from file:", err);
+  }
+  return null;
+}
+
+/**
+ * Write password to plaintext fallback file in userData.
+ */
+function writePasswordToFile(password: string, userData: string): string {
+  const file = path.join(userData, "manager-pass.txt");
+  try {
+    fs.writeFileSync(file, password, "utf8");
+  } catch (err) {
+    console.error("Failed to write manager password to fallback file:", err);
+    // Continue anyway — we have it in memory.
+  }
+  return password;
+}
+
+/**
+ * Securely persist and retrieve the manager password.
+ * Windows: Registry (HKCU or HKLM) with plaintext fallback.
+ * Linux/macOS: Plaintext file in userData.
  */
 export class ManagerPasswordStore {
-  private file: string;
-  private safeStorage: SafeStorageLike;
   private cachedPassword: string | null = null;
-
-  constructor() {
-    const { userData, safeStorage } = loadElectron();
-    this.file = path.join(userData, "manager-pass.bin");
-    this.safeStorage = safeStorage;
-  }
 
   /**
    * Get the persisted manager password, generating + storing it on first run.
@@ -52,46 +161,33 @@ export class ManagerPasswordStore {
   getPassword(): string {
     if (this.cachedPassword) return this.cachedPassword;
 
-    // Try to load existing password from disk.
-    if (fs.existsSync(this.file)) {
-      try {
-        const buf = fs.readFileSync(this.file);
-        const asText = buf.toString("utf8");
+    const userData = loadElectron();
 
-        // Plaintext fallback prefix (for when encryption wasn't available on creation).
-        if (asText.startsWith("plain:")) {
-          this.cachedPassword = asText.slice(6);
-          return this.cachedPassword;
-        }
-
-        // Try to decrypt (encryption available).
-        try {
-          this.cachedPassword = this.safeStorage.decryptString(buf);
-          return this.cachedPassword;
-        } catch {
-          // Decryption failed; fall through to generate a new one.
-          console.warn("Failed to decrypt manager password; generating new one");
-        }
-      } catch (err) {
-        console.warn("Failed to read manager password file:", err);
+    // Try to read from Windows Registry (if on Windows)
+    if (process.platform === "win32") {
+      const regPassword = readPasswordFromRegistry();
+      if (regPassword) {
+        this.cachedPassword = regPassword;
+        return this.cachedPassword;
       }
     }
 
-    // First run or read/decrypt failed: generate a fresh password.
+    // Try to read from plaintext fallback file
+    const filePassword = readPasswordFromFile(userData);
+    if (filePassword) {
+      this.cachedPassword = filePassword;
+      return this.cachedPassword;
+    }
+
+    // First run or both reads failed: generate a fresh password
     const password = randomBytes(18).toString("base64url");
     this.cachedPassword = password;
 
-    // Persist it (encrypted or plaintext).
-    try {
-      if (this.safeStorage.isEncryptionAvailable()) {
-        fs.writeFileSync(this.file, this.safeStorage.encryptString(password));
-      } else {
-        // Plaintext fallback — still unique per install, never crashes.
-        fs.writeFileSync(this.file, `plain:${password}`, "utf8");
-      }
-    } catch (err) {
-      console.error("Failed to persist manager password:", err);
-      // Continue anyway — we have it in memory.
+    // Persist it (registry on Windows with file fallback, or just file on other platforms)
+    if (process.platform === "win32") {
+      writePasswordToRegistry(password, userData);
+    } else {
+      writePasswordToFile(password, userData);
     }
 
     return password;
