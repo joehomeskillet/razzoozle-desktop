@@ -632,15 +632,20 @@ async function injectManagerScript(managerPassword: string): Promise<void> {
 }
 
 /**
- * The base URL the game lobby should use for join links (window.__RAZZ_JOIN_BASE).
- * Prefer the gateway session joinUrl when the gateway is enabled AND a session
- * exists (remote-reachable); otherwise the active LAN http origin
- * (http://<lanIp>:<port>), falling back to loopback when no LAN exists.
+ * The base URL the game lobby should use for join links. When the gateway is on
+ * AND a session exists, the host is dialing the R0 relay tunnel, so players reach
+ * the bundled game through the single fixed relay host (play.razzoozle.xyz): the
+ * relay proxies the game SPA directly — the phone lands in the real game (join +
+ * the big PIN shown in the lobby), no rendezvous page. Otherwise the active LAN
+ * http origin (http://<lanIp>:<port>), falling back to loopback.
  */
+const RELAY_PLAYER_BASE =
+  process.env.RAZZOOZLE_RELAY_PLAYER_BASE ?? "https://play.razzoozle.xyz";
+
 function resolveJoinBase(): string {
   const port = DEFAULT_HOST_PORT;
   if (getUseGateway() && gatewaySession?.joinUrl) {
-    return gatewaySession.joinUrl;
+    return RELAY_PLAYER_BASE;
   }
   const lanIp = detectLanIpv4().ip ?? "127.0.0.1";
   return `http://${lanIp}:${port}`;
