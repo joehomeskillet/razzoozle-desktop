@@ -88,8 +88,11 @@ function getGatewayUrl(): string {
  * forces ON for dev; otherwise the value persisted by the Tray toggle wins.
  */
 function getUseGateway(): boolean {
+  // Default ON: the gateway is the public join path (gw.razzoozle.xyz). Force
+  // off with RAZZOOZLE_GATEWAY_ENABLED=0 or by persisting useGateway:false (tray).
   if (process.env.RAZZOOZLE_GATEWAY_ENABLED === "1") return true;
-  return readConfig().useGateway === true;
+  if (process.env.RAZZOOZLE_GATEWAY_ENABLED === "0") return false;
+  return readConfig().useGateway !== false;
 }
 
 function setUseGateway(value: boolean): void {
